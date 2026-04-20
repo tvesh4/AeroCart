@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+"""
+AeroCart - Autonomous Luggage-Carrying Robot FSM
+Main control program for Jetson Nano
+Integrates: UWB tracking, facial recognition, Arduino servo control, and motor commands
+"""
+
+import sys
+import os
+import time
+import threading
+import queue
+import serial
+import logging
+import pickle
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional
+
+# Import project modules
+try:
+    from headshots import capture_photos
+    from model_training import knownEncodings, knownNames
+    from jetsonnanoUWB import DWM1001Handler, RobotDecisionEngine, RobotState, RobotCommand
+    import face_recognition
+    import cv2
+    import numpy as np
+except ImportError as e:
+    print(f"[ERROR] Missing required module: {e}")
+    print("[ERROR] Make sure all project files are present")
+    sys.exit(1)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(levelname)s] - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# FSM State Definitions
+# ============================================================
+
+class SystemState(Enum):
+    """Robot system states"""
+    IDLE = "idle"
+    TRAINING = "training"
+    OPENING_COMPARTMENT = "opening_compartment"
+    CLOSING_COMPARTMENT = "closing_compartment"
+    FOLLOWING = "following"
+    STORAGE = "storage"
+    SHUTDOWN = "shutdown"
+
+
+@dataclass
+class UserProfile:
+    """User profile data"""
+    name: str
+    face_encoding: Optional[np.ndarray] = None
+    uwb_distance: float = 0.0
+    last_seen: float = 0.0
+
+
+# ============================================================
+# Arduino Communication Handler
+# ============================================================
+
+class ArduinoHandler:
+    """Manages communication with Arduino Mega"""
+
+    def __init__(self, port: str = "/dev/ttyACM0", baud: int = 9600):
+        self.port = port
+        self.baud = baud
+        self.ser = None
+        self.connected = False
+
+    def connect(self) -> bool:
+        """Establish connection to Arduino"""
+        try:
+            self.ser = serial.Serial(self.port, self.baud, timeout=1.0)
+            time.sleep(2)  # Wait for Arduino to initialize
+            logger.info(f"✓ Arduino connected on {self.port}")
+            self.connected = True
+            return True
+        except Exception as e:
+            logger.error(f"✗ Arduino connection failed: {e}")
+            self.connected = False
+            return False
+
+    def send_motor_command(self, left_speed: int, right_speed: int) -> bool:
+        """Send motor speed command to Arduino"""
+        if not self.connected or not self.ser:
+            return False
+
+        try:
+            # Format: M,left_speed,right_speed\n
+            command = f"M,{left_speed},{right_speed}\n"
+            self.ser.write(command.encode())
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send motor command: {e}")
+            return False
+
+    def open_compartment(self) -> bool:
+        """Send servo open command"""
+        if not self.connected or not self.ser:
+            return False
+
+        try:
+            # Format: O for open
+            command = "O\n"
+            self.ser.write(command.encode())
+            logger.info("Compartment open command sent")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send open command: {e}")
+            return False
+
+    def close_compartment(self) -> bool:
+        """Send servo close command"""
+        if not self.connected or not self.ser:
+            return False
+
+        try:
+            # Format: C for close
+            command = "C\n"
+            self.ser.write(command.encode())
+            logger.info("Compartment close command sent")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send close command: {e}")
+            return False
+
+    def disconnect(self):
+        """Close connection"""
+        if self.ser:
+            self.ser.close()
+            self.connected = False
+            logger.info("Arduino disconnected")
+
+
+# ============================================================
+# Button Input Handler
+# ============================================================
+
+class ButtonHandler:
+    """Handles button input for state transitions"""
+
+    def __init__(self, pin: int = 21):
+        """
+        Initialize button handler
+        Note: Requires GPIO setup or modify for your specific hardware
+        """
+        self.pin = pin
+        self.pressed = False
+        self.last_press_time = 0
+        self.debounce_time = 0.5  # seconds
+        self.button_queue = queue.Queue()
+
+        # Try to import RPi.GPIO if available
+        try:
+            import Jetson.GPIO as GPIO
+            # GPIO.setmode(GPIO.BOARD)
+            # GPIO.setup(self.pin, GPIO.IN)
+            self.gpio = GPIO
+            self.has_gpio = True
+            self._setup_gpio()
+        except ImportError:
+            logger.warning("RPi.GPIO not available - using serial input for button simulation")
+            self.has_gpio = False
+
+    def _setup_gpio(self):
+        """Setup GPIO for button"""
+        try:
+            self.gpio.setmode(self.gpio.BOARD)
+            self.gpio.setup(self.pin, self.gpio.IN, pull_up_down=self.gpio.PUD_UP)
+            self.gpio.add_event_detect(
+                self.pin,
+                self.gpio.FALLING,
+                callback=self._button_callback,
+                bouncetime=200
+            )
+            logger.info(f"✓ Button initialized on GPIO pin {self.pin}")
+        except Exception as e:
+            logger.error(f"Failed to setup GPIO: {e}")
+            self.has_gpio = False
+
+    def _button_callback(self, channel):
+        """GPIO callback when button is pressed"""
+        current_time = time.time()
+        if current_time - self.last_press_time > self.debounce_time:
+            self.pressed = True
+            self.last_press_time = current_time
+            logger.info("Button pressed!")
+
+    def check_press(self) -> bool:
+        """Check if button was pressed"""
+        if self.has_gpio:
+            pressed = self.pressed
+            self.pressed = False
+            return pressed
+        else:
+            # Fallback: check for keyboard input (for testing)
+            try:
+                key = input("Press ENTER or type 'q' to quit: ")
+                if key.lower() == 'q':
+                    return None  # Signal quit
+                return True if key == "" else False
+            except:
+                return False
+
+    def cleanup(self):
+        """Cleanup GPIO"""
+        if self.has_gpio:
+            try:
+                self.gpio.cleanup()
+            except:
+                pass
+
+
+# ============================================================
+# Facial Recognition Engine
+# ============================================================
+
+class FacialRecognitionEngine:
+    """Handles facial recognition and user identification"""
+
+    def __init__(self, encoding_file: str = "encodings.pickle"):
+        self.encoding_file = encoding_file
+        self.known_encodings = []
+        self.known_names = []
+        self.cap = None
+        self.initialized = False
+
+        self._load_encodings()
+        self._initialize_camera()
+
+    def _load_encodings(self) -> bool:
+        """Load pre-trained face encodings"""
+        if not os.path.exists(self.encoding_file):
+            logger.warning(f"Encoding file not found: {self.encoding_file}")
+            return False
+
+        try:
+            with open(self.encoding_file, "rb") as f:
+                data = pickle.loads(f.read())
+                self.known_encodings = data["encodings"]
+                self.known_names = data["names"]
+            logger.info(f"✓ Loaded {len(self.known_encodings)} face encodings")
+            return len(self.known_encodings) > 0
+        except Exception as e:
+            logger.error(f"Failed to load encodings: {e}")
+            return False
+
+    def _initialize_camera(self):
+        """Initialize camera for face recognition"""
+        try:
+            # Try CSI camera first (Jetson Nano)
+            pipeline = self._gstreamer_pipeline()
+            self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+            if not self.cap.isOpened():
+                # Fallback to USB camera
+                self.cap = cv2.VideoCapture(0)
+
+            if self.cap.isOpened():
+                logger.info("✓ Camera initialized")
+                self.initialized = True
+            else:
+                logger.warning("Camera initialization failed")
+                self.initialized = False
+        except Exception as e:
+            logger.error(f"Camera initialization error: {e}")
+            self.initialized = False
+
+    def _gstreamer_pipeline(self, sensor_id=0, capture_width=640, capture_height=480,
+                           display_width=640, display_height=480, framerate=30, flip_method=0):
+        """GStreamer pipeline for Jetson Nano CSI camera"""
+        return (
+            "nvarguscamerasrc sensor-id=%d ! "
+            "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+            "nvvidconv flip-method=%d ! "
+            "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+            "videoconvert ! "
+            "video/x-raw, format=(string)BGR ! appsink"
+            % (sensor_id, capture_width, capture_height, framerate, flip_method, display_width, display_height)
+        )
+
+    def recognize_face(self, tolerance: float = 0.5) -> Optional[UserProfile]:
+        """Recognize face in current frame"""
+        if not self.initialized or not self.cap or not self.cap.isOpened():
+            logger.warning("Camera not initialized")
+            return None
+
+        if len(self.known_encodings) == 0:
+            logger.warning("No trained face encodings available")
+            return None
+
+        try:
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                return None
+
+            # Resize frame for faster processing
+            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+            # Find faces and encodings
+            face_locations = face_recognition.face_locations(rgb_small_frame)
+            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+
+            if len(face_encodings) == 0:
+                return None
+
+            # Use first face found
+            face_encoding = face_encodings[0]
+
+            # Compare with known encodings
+            matches = face_recognition.compare_faces(
+                self.known_encodings, face_encoding, tolerance=tolerance
+            )
+            face_distances = face_recognition.face_distance(
+                self.known_encodings, face_encoding
+            )
+
+            best_match_index = np.argmin(face_distances)
+
+            if matches[best_match_index]:
+                name = self.known_names[best_match_index]
+                logger.info(f"User recognized: {name}")
+                profile = UserProfile(name=name, face_encoding=face_encoding)
+                return profile
+            else:
+                logger.info("Unknown person detected")
+                return None
+
+        except Exception as e:
+            logger.error(f"Face recognition error: {e}")
+            return None
+
+    def cleanup(self):
+        """Release camera resources"""
+        if self.cap:
+            self.cap.release()
+        cv2.destroyAllWindows()
+
+
+# ============================================================
+# Main FSM Controller
+# ============================================================
+
+class RobotFSM:
+    """Finite State Machine for robot operation"""
+
+    def __init__(self):
+        self.state = SystemState.IDLE
+        self.next_state = SystemState.IDLE
+        self.current_user = None
+        self.running = True
+
+        # Initialize hardware handlers
+        logger.info("Initializing hardware...")
+        self.arduino = ArduinoHandler()
+        self.button = ButtonHandler()
+        self.face_engine = FacialRecognitionEngine()
+
+        # Initialize UWB handlers (ports may need adjustment)
+        self.master_uwb = None
+        self.slave_uwb = None
+        self.uwb_initialized = False
+        self._initialize_uwb()
+
+        # Robot state for following
+        self.decision_engine = None
+
+        logger.info("=" * 60)
+        logger.info("AeroCart Robot FSM Initialized")
+        logger.info("=" * 60)
+
+    def _initialize_uwb(self):
+        """Initialize UWB modules"""
+        try:
+            # Find available serial ports
+            import glob
+            ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
+
+            if len(ports) >= 2:
+                self.master_uwb = DWM1001Handler(ports[0], name="MASTER")
+                self.slave_uwb = DWM1001Handler(ports[1], name="SLAVE")
+
+                if self.master_uwb.connect() and self.slave_uwb.connect():
+                    self.master_uwb.start_continuous_reading()
+                    self.slave_uwb.start_continuous_reading()
+                    self.uwb_initialized = True
+                    self.decision_engine = RobotDecisionEngine(target_distance=1.0)
+                    logger.info("✓ UWB modules initialized successfully")
+                else:
+                    logger.warning("Failed to connect UWB modules")
+                    self.uwb_initialized = False
+            else:
+                logger.warning(f"Not enough UWB ports found: {len(ports)} (need 2)")
+                self.uwb_initialized = False
+
+        except Exception as e:
+            logger.error(f"UWB initialization error: {e}")
+            self.uwb_initialized = False
+
+    def run(self):
+        """Main FSM loop"""
+        try:
+            while self.running:
+                self.process_state()
+                time.sleep(0.1)  # Prevention of busy-waiting
+
+        except KeyboardInterrupt:
+            logger.info("\n[INFO] Shutdown signal received")
+        finally:
+            self.cleanup()
+
+    def process_state(self):
+        """Process current state and handle transitions"""
+
+        if self.state == SystemState.IDLE:
+            self._state_idle()
+        elif self.state == SystemState.TRAINING:
+            self._state_training()
+        elif self.state == SystemState.OPENING_COMPARTMENT:
+            self._state_opening_compartment()
+        elif self.state == SystemState.CLOSING_COMPARTMENT:
+            self._state_closing_compartment()
+        elif self.state == SystemState.FOLLOWING:
+            self._state_following()
+        elif self.state == SystemState.STORAGE:
+            self._state_storage()
+        elif self.state == SystemState.SHUTDOWN:
+            self.running = False
+
+        # Update state
+        self.state = self.next_state
+
+    def _state_idle(self):
+        """IDLE state - waiting for user interaction"""
+        if not hasattr(self, '_idle_logged'):
+            logger.info(f"[STATE] IDLE - Waiting for user button press")
+            self._idle_logged = True
+
+        # Check for button press
+        button_pressed = self.button.check_press()
+
+        if button_pressed is None:  # Quit signal
+            self.next_state = SystemState.SHUTDOWN
+            return
+
+        if button_pressed:
+            logger.info("User initiated - entering TRAINING state")
+            self.next_state = SystemState.TRAINING
+            self._idle_logged = False
+
+    def _state_training(self):
+        """TRAINING state - facial recognition model training"""
+        if not hasattr(self, '_training_started'):
+            logger.info(f"[STATE] TRAINING - Starting facial recognition training")
+            logger.info("Taking headshots for user identification...")
+
+            try:
+                # Capture photos for the user
+                user_name = self._get_user_name()
+                capture_photos(user_name)
+
+                # Train the model
+                logger.info("Training facial recognition model...")
+                self._train_model()
+
+                # Load updated encodings
+                self.face_engine._load_encodings()
+
+                self.current_user = UserProfile(name=user_name)
+                logger.info(f"Training complete for user: {user_name}")
+
+                self._training_started = True
+            except Exception as e:
+                logger.error(f"Training failed: {e}")
+                self.next_state = SystemState.IDLE
+                self._training_started = False
+                return
+
+        # Wait for button press to open compartment
+        button_pressed = self.button.check_press()
+
+        if button_pressed:
+            logger.info("Training complete - entering compartment opening state")
+            self.next_state = SystemState.OPENING_COMPARTMENT
+            self._training_started = False
+
+    def _state_opening_compartment(self):
+        """OPENING_COMPARTMENT state - open storage servo"""
+        if not hasattr(self, '_opening_started'):
+            logger.info(f"[STATE] OPENING_COMPARTMENT - Opening storage compartment")
+
+            # Send open command to Arduino
+            if self.arduino.connected:
+                success = self.arduino.open_compartment()
+                if success:
+                    logger.info("Compartment opened successfully")
+                else:
+                    logger.warning("Failed to open compartment")
+            else:
+                logger.warning("Arduino not connected - cannot open compartment")
+
+            self._opening_started = True
+            self.compartment_open_time = time.time()
+
+        # Wait for user to place luggage and press button
+        button_pressed = self.button.check_press()
+
+        if button_pressed:
+            logger.info("Item placed - closing compartment")
+            self.next_state = SystemState.CLOSING_COMPARTMENT
+            self._opening_started = False
+
+    def _state_closing_compartment(self):
+        """CLOSING_COMPARTMENT state - close storage servo"""
+        if not hasattr(self, '_closing_started'):
+            logger.info(f"[STATE] CLOSING_COMPARTMENT - Closing storage compartment")
+
+            # Send close command to Arduino
+            if self.arduino.connected:
+                success = self.arduino.close_compartment()
+                if success:
+                    logger.info("Compartment closed successfully")
+                else:
+                    logger.warning("Failed to close compartment")
+            else:
+                logger.warning("Arduino not connected - cannot close compartment")
+
+            self._closing_started = True
+            self.compartment_close_time = time.time()
+
+        # Wait for user to press button to start following
+        button_pressed = self.button.check_press()
+
+        if button_pressed:
+            logger.info("Compartment closed - entering FOLLOWING state")
+            self.next_state = SystemState.FOLLOWING
+            self._closing_started = False
+
+    def _state_following(self):
+        """FOLLOWING state - follow user using UWB"""
+        if not hasattr(self, '_following_started'):
+            logger.info(f"[STATE] FOLLOWING - Following user with UWB")
+
+            if not self.uwb_initialized:
+                logger.error("UWB not initialized - cannot follow")
+                self.next_state = SystemState.IDLE
+                return
+
+            self._following_started = True
+
+        # Get UWB data
+        if self.uwb_initialized and self.decision_engine:
+            slave_data = self.slave_uwb.get_latest_data() if self.slave_uwb else None
+
+            if slave_data and slave_data.valid:
+                # Calculate motor commands
+                command = self.decision_engine.calculate_motor_speeds(
+                    slave_data.distance,
+                    slave_data.quality
+                )
+
+                # Store UWB distance for storage check
+                self.current_user.uwb_distance = slave_data.distance
+                self.current_user.last_seen = time.time()
+
+                # Send motor commands to Arduino
+                if self.arduino.connected:
+                    self.arduino.send_motor_command(command.left_speed, command.right_speed)
+
+                logger.debug(f"Following - Distance: {slave_data.distance:.2f}m, "
+                           f"Speed: L{command.left_speed} R{command.right_speed}")
+
+        # Check for button press to enter storage state
+        button_pressed = self.button.check_press()
+
+        if button_pressed:
+            logger.info("User pressed button - entering STORAGE state")
+            self.next_state = SystemState.STORAGE
+            self._following_started = False
+
+    def _state_storage(self):
+        """STORAGE state - verify user and unlock compartment"""
+        if not hasattr(self, '_storage_started'):
+            logger.info(f"[STATE] STORAGE - Verifying user and checking proximity")
+            self._storage_started = True
+            self.storage_start_time = time.time()
+
+        # Check condition 1: UWB distance (user is close)
+        uwb_ok = False
+        if self.current_user:
+            time_since_uwb = time.time() - self.current_user.last_seen
+            uwb_distance_ok = (
+                self.current_user.uwb_distance > 0 and
+                self.current_user.uwb_distance < 1.5 and  # Within 1.5 meters
+                time_since_uwb < 2.0  # Recent reading
+            )
+            uwb_ok = uwb_distance_ok
+            logger.info(f"UWB Check: Distance={self.current_user.uwb_distance:.2f}m, OK={uwb_ok}")
+
+        # Check condition 2: Facial recognition (correct user)
+        face_ok = True
+        # recognized_user = self.face_engine.recognize_face()
+
+        # if recognifzed_user:
+        #     if self.current_user and recognized_user.name == self.current_user.name:
+        #         face_ok = True
+        #         logger.info(f"Face Check: User {recognized_user.name} verified, OK=True")
+        #     else:
+        #         logger.warning(f"Face Check: Unknown user {recognized_user.name}")
+        # else:
+        #     logger.info("Face Check: No face detected")
+
+        # If both conditions met, unlock compartment
+        if uwb_ok and face_ok:
+            logger.info("✓ User verified! Opening compartment for unloading")
+            if self.arduino.connected:
+                self.arduino.open_compartment()
+
+            # Return to IDLE after user unloads
+            time.sleep(3)  # Give user time to interact
+            logger.info("Returning to IDLE state")
+            self.next_state = SystemState.IDLE
+            self._storage_started = False
+            self.current_user = None
+
+        # Timeout - return to FOLLOWING if verification fails
+        elif time.time() - self.storage_start_time > 5.0:
+            logger.warning("Storage verification timeout - returning to FOLLOWING")
+            self.next_state = SystemState.FOLLOWING
+            self._storage_started = False
+
+    def _get_user_name(self) -> str:
+        """Get user name for training"""
+        try:
+            # Try to read from input
+            name = input("\n[INPUT] Enter user name for facial recognition training: ").strip()
+            if name:#big errors starting from here
+                return name
+            else:
+                return "USER"
+        except:
+            return "USER"
+
+    def _train_model(self):
+        """Train facial recognition model"""
+        try:
+            # This integrates with model_training.py logic
+            from imutils import paths
+
+            logger.info("Processing faces for training...")
+            imagePaths = list(paths.list_images("dataset"))
+
+            if not imagePaths:
+                logger.warning("No images found in dataset")
+                return
+
+            knownEncodings = []
+            knownNames = []
+
+            for (i, imagePath) in enumerate(imagePaths):
+                logger.debug(f"Processing image {i + 1}/{len(imagePaths)}")
+                name = imagePath.split(os.path.sep)[-2]
+
+                image = cv2.imread(imagePath)
+                if image is None:
+                    continue
+
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                boxes = face_recognition.face_locations(rgb, model="hog")
+                encodings = face_recognition.face_encodings(rgb, boxes)
+
+                for encoding in encodings:
+                    knownEncodings.append(encoding)
+                    knownNames.append(name)
+
+            logger.info(f"Serializing {len(knownEncodings)} encodings...")
+            data = {"encodings": knownEncodings, "names": knownNames}
+            with open("encodings.pickle", "wb") as f:
+                f.write(pickle.dumps(data))
+
+            logger.info("Training complete. Encodings saved to 'encodings.pickle'")
+
+        except Exception as e:
+            logger.error(f"Model training error: {e}")
+
+    def cleanup(self):
+        """Cleanup resources"""
+        logger.info("\n[INFO] Cleaning up resources...")
+
+        # Stop motors
+        if self.arduino.connected:
+            self.arduino.send_motor_command(0, 0)
+
+        # Disconnect Arduino
+        if self.arduino:
+            self.arduino.disconnect()
+
+        # Stop UWB modules
+        if self.master_uwb:
+            self.master_uwb.stop()
+        if self.slave_uwb:
+            self.slave_uwb.stop()
+
+        # Cleanup face recognition
+        if self.face_engine:
+            self.face_engine.cleanup()
+
+        # Cleanup button GPIO
+        if self.button:
+            self.button.cleanup()
+
+        logger.info("All resources cleaned up")
+        logger.info("=" * 60)
+        logger.info("AeroCart Robot FSM Shut Down")
+        logger.info("=" * 60)
+
+
+# ============================================================
+# Main Entry Point
+# ============================================================
+
+def main():
+    """Main entry point"""
+    print("\n" + "=" * 60)
+    print("AeroCart - Autonomous Luggage-Carrying Robot")
+    print("FSM Control System for Jetson Nano")
+    print("=" * 60 + "\n")
+
+    # Create and run FSM
+    fsm = RobotFSM()
+    fsm.run()
+
+
+if __name__ == "__main__":
+    main()
+
