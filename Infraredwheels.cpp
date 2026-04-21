@@ -1,12 +1,7 @@
-// =============================================
-// Simplified Follow-Me Robot Code
-// Only Movement + 2 IR Sensors (Stop on Obstacle)
-// =============================================
+#include <Arduino.h>
+#include <Servo.h>
 
-#define IRpin1  40     // Left Front IR Sensor
-#define IRpin2  47     // Right Front IR Sensor
-
-// Motor Pins
+// ====================== PIN DEFINITIONS ======================
 #define PWMA  12
 #define DIRA1 34
 #define DIRA2 35
@@ -20,100 +15,141 @@
 #define DIRD1 A4
 #define DIRD2 A5
 
-int Motor_PWM = 1900;     // Default speed (you can change)
+#define IRpin1 40
+#define IRpin2 47
 
-// Motor Macros
-#define MOTORA_FORWARD(pwm) do{digitalWrite(DIRA1,LOW); digitalWrite(DIRA2,HIGH); analogWrite(PWMA,pwm);}while(0)
-//#define MOTORA_STOP()       do{digitalWrite(DIRA1,LOW); digitalWrite(DIRA2,LOW); analogWrite(PWMA,0);}while(0)
-#define MOTORA_BACKOFF(pwm) do{digitalWrite(DIRA1,HIGH);digitalWrite(DIRA2,LOW); analogWrite(PWMA,pwm);}while(0)
+int Motor_PWM = 300;
 
-#define MOTORB_FORWARD(pwm) do{digitalWrite(DIRB1,LOW); digitalWrite(DIRB2,HIGH);analogWrite(PWMB,pwm);}while(0)
-//#define MOTORB_STOP()       do{digitalWrite(DIRB1,LOW); digitalWrite(DIRB2,LOW); analogWrite(PWMB,0);}while(0)
-#define MOTORB_BACKOFF(pwm) do{digitalWrite(DIRB1,HIGH);digitalWrite(DIRB2,LOW); analogWrite(PWMB,pwm);}while(0)
+// ====================== SERVO ======================
+const int servoPin = 48;
+Servo boxServo;
+bool boxOpen = false;
 
-#define MOTORC_FORWARD(pwm) do{digitalWrite(DIRC1,LOW); digitalWrite(DIRC2,HIGH);analogWrite(PWMC,pwm);}while(0)
-//#define MOTORC_STOP()       do{digitalWrite(DIRC1,LOW); digitalWrite(DIRC2,LOW); analogWrite(PWMC,0);}while(0)
-#define MOTORC_BACKOFF(pwm) do{digitalWrite(DIRC1,HIGH);digitalWrite(DIRC2,LOW); analogWrite(PWMC,pwm);}while(0)
+// ====================== STATE ======================
+String lastUserCommand = "stop";   // Remembers what user last wanted
 
-#define MOTORD_FORWARD(pwm) do{digitalWrite(DIRD1,LOW); digitalWrite(DIRD2,HIGH);analogWrite(PWMD,pwm);}while(0)
-//#define MOTORD_STOP()       do{digitalWrite(DIRD1,LOW); digitalWrite(DIRD2,LOW); analogWrite(PWMD,0);}while(0)
-#define MOTORD_BACKOFF(pwm) do{digitalWrite(DIRD1,HIGH);digitalWrite(DIRD2,LOW); analogWrite(PWMD,pwm);}while(0)
+// ====================== MOTOR MACROS ======================
+#define MOTORA_FORWARD(pwm)   do{digitalWrite(DIRA1,LOW);  digitalWrite(DIRA2,HIGH); analogWrite(PWMA,pwm);}while(0)
+#define MOTORA_BACKOFF(pwm)   do{digitalWrite(DIRA1,HIGH); digitalWrite(DIRA2,LOW);  analogWrite(PWMA,pwm);}while(0)
+#define MOTORA_STOP()         do{digitalWrite(DIRA1,HIGH); digitalWrite(DIRA2,HIGH); analogWrite(PWMA,0);}while(0)
 
-#define MOTORA_STOP() do{digitalWrite(DIRA1,HIGH); digitalWrite(DIRA2,HIGH); analogWrite(PWMA,0);}while(0)
-#define MOTORB_STOP() do{digitalWrite(DIRB1,HIGH); digitalWrite(DIRB2,HIGH); analogWrite(PWMB,0);}while(0)
-#define MOTORC_STOP() do{digitalWrite(DIRC1,HIGH); digitalWrite(DIRC2,HIGH); analogWrite(PWMC,0);}while(0)
-#define MOTORD_STOP() do{digitalWrite(DIRD1,HIGH); digitalWrite(DIRD2,HIGH); analogWrite(PWMD,0);}while(0)
-// ====================== MOVEMENT FUNCTIONS ======================
+#define MOTORB_FORWARD(pwm)   do{digitalWrite(DIRB1,LOW);  digitalWrite(DIRB2,HIGH); analogWrite(PWMB,pwm);}while(0)
+#define MOTORB_BACKOFF(pwm)   do{digitalWrite(DIRB1,HIGH); digitalWrite(DIRB2,LOW);  analogWrite(PWMB,pwm);}while(0)
+#define MOTORB_STOP()         do{digitalWrite(DIRB1,HIGH); digitalWrite(DIRB2,HIGH); analogWrite(PWMB,0);}while(0)
+
+#define MOTORC_FORWARD(pwm)   do{digitalWrite(DIRC1,LOW);  digitalWrite(DIRC2,HIGH); analogWrite(PWMC,pwm);}while(0)
+#define MOTORC_BACKOFF(pwm)   do{digitalWrite(DIRC1,HIGH); digitalWrite(DIRC2,LOW);  analogWrite(PWMC,pwm);}while(0)
+#define MOTORC_STOP()         do{digitalWrite(DIRC1,HIGH); digitalWrite(DIRC2,HIGH); analogWrite(PWMC,0);}while(0)
+
+#define MOTORD_FORWARD(pwm)   do{digitalWrite(DIRD1,LOW);  digitalWrite(DIRD2,HIGH); analogWrite(PWMD,pwm);}while(0)
+#define MOTORD_BACKOFF(pwm)   do{digitalWrite(DIRD1,HIGH); digitalWrite(DIRD2,LOW);  analogWrite(PWMD,pwm);}while(0)
+#define MOTORD_STOP()         do{digitalWrite(DIRD1,HIGH); digitalWrite(DIRD2,HIGH); analogWrite(PWMD,0);}while(0)
+
+// ====================== MOVEMENT ======================
 void ADVANCE() {
-  MOTORA_FORWARD(Motor_PWM);
-  MOTORB_BACKOFF(Motor_PWM);
-  MOTORC_FORWARD(Motor_PWM);
-  MOTORD_BACKOFF(Motor_PWM);
+  lastUserCommand = "forward";
+  MOTORA_FORWARD(Motor_PWM); MOTORB_BACKOFF(Motor_PWM);
+  MOTORC_FORWARD(Motor_PWM); MOTORD_BACKOFF(Motor_PWM);
 }
 
 void BACK() {
-  MOTORA_BACKOFF(Motor_PWM);
-  MOTORB_FORWARD(Motor_PWM);
-  MOTORC_BACKOFF(Motor_PWM);
-  MOTORD_FORWARD(Motor_PWM);
+  lastUserCommand = "back";
+  MOTORA_BACKOFF(Motor_PWM); MOTORB_FORWARD(Motor_PWM);
+  MOTORC_BACKOFF(Motor_PWM); MOTORD_FORWARD(Motor_PWM);
 }
 
-void STOP() {
-  MOTORA_STOP();
-  MOTORB_STOP();
-  MOTORC_STOP();
-  MOTORD_STOP();
+void FULL_STOP() {
+  lastUserCommand = "stop";
+  MOTORA_STOP(); MOTORB_STOP(); MOTORC_STOP(); MOTORD_STOP();
 }
 
-void LEFT() {
-  MOTORA_BACKOFF(Motor_PWM/2);
-  MOTORB_BACKOFF(Motor_PWM/2);
-  MOTORC_FORWARD(Motor_PWM/2);
-  MOTORD_FORWARD(Motor_PWM/2);
+void TEMPORARY_STOP() {          // Only stops motors, does NOT change user command
+  MOTORA_STOP(); MOTORB_STOP(); MOTORC_STOP(); MOTORD_STOP();
 }
 
-void RIGHT() {
-  MOTORA_FORWARD(Motor_PWM/2);
-  MOTORB_FORWARD(Motor_PWM/2);
-  MOTORC_BACKOFF(Motor_PWM/2);
-  MOTORD_BACKOFF(Motor_PWM/2);
+void ROTATE_LEFT() {
+  lastUserCommand = "left";
+  MOTORA_BACKOFF(Motor_PWM); MOTORB_BACKOFF(Motor_PWM);
+  MOTORC_FORWARD(Motor_PWM); MOTORD_FORWARD(Motor_PWM);
 }
 
-// ====================== IR OBSTACLE AVOIDANCE ======================
+void ROTATE_RIGHT() {
+  lastUserCommand = "right";
+  MOTORA_FORWARD(Motor_PWM); MOTORB_FORWARD(Motor_PWM);
+  MOTORC_BACKOFF(Motor_PWM); MOTORD_BACKOFF(Motor_PWM);
+}
+
+// ====================== SERVO ======================
+void openBox() {
+  if (boxOpen) return;
+  Serial.println("Opening Box...");
+  for (int pos = 0; pos <= 90; pos += 2) { boxServo.write(pos); delay(20); }
+  boxOpen = true;
+  Serial.println("Box Opened");
+}
+
+void closeBox() {
+  if (!boxOpen) return;
+  Serial.println("Closing Box...");
+  for (int pos = 90; pos >= 0; pos -= 2) { boxServo.write(pos); delay(20); }
+  boxOpen = false;
+  Serial.println("Box Closed");
+}
+
 bool obstacleDetected() {
-  return digitalRead(IRpin1) == 0 || digitalRead(IRpin2) == 0;  // Return true if any sensor detects obstacle
+  return (digitalRead(IRpin1) == 0) || (digitalRead(IRpin2) == 0);
 }
 
 // ====================== SETUP ======================
 void setup() {
+  pinMode(PWMA, OUTPUT); pinMode(DIRA1, OUTPUT); pinMode(DIRA2, OUTPUT);
+  pinMode(PWMB, OUTPUT); pinMode(DIRB1, OUTPUT); pinMode(DIRB2, OUTPUT);
+  pinMode(PWMC, OUTPUT); pinMode(DIRC1, OUTPUT); pinMode(DIRC2, OUTPUT);
+  pinMode(PWMD, OUTPUT); pinMode(DIRD1, OUTPUT); pinMode(DIRD2, OUTPUT);
+
+  pinMode(IRpin1, INPUT_PULLUP);
+  pinMode(IRpin2, INPUT_PULLUP);
+
+  boxServo.attach(servoPin);
+  boxServo.write(0);
+
+  FULL_STOP();
+
   Serial.begin(115200);
-  
-  // IR Sensors
-  pinMode(IRpin1, INPUT);
-  pinMode(IRpin2, INPUT);
-
-  // Motor Pins
-  pinMode(PWMA, OUTPUT);  pinMode(DIRA1, OUTPUT);  pinMode(DIRA2, OUTPUT);
-  pinMode(PWMB, OUTPUT);  pinMode(DIRB1, OUTPUT);  pinMode(DIRB2, OUTPUT);
-  pinMode(PWMC, OUTPUT);  pinMode(DIRC1, OUTPUT);  pinMode(DIRC2, OUTPUT);
-  pinMode(PWMD, OUTPUT);  pinMode(DIRD1, OUTPUT);  pinMode(DIRD2, OUTPUT);
-
-  STOP();   // Make sure motors are stopped at start
-  
-  Serial.println("Robot Ready - Movement + IR Obstacle Stop");
-  Serial.println("IR1 (Pin 2) | IR2 (Pin 3)");
+  Serial.println("=== Simplified Version (No shouldMoveForward) ===");
+  Serial.println("Commands: forward, back, left, right, stop, open, close");
 }
 
 // ====================== MAIN LOOP ======================
 void loop() {
+  // Read User Commands
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    cmd.toLowerCase();
 
-  if (obstacleDetected()) {
-    STOP();
-
-    while (obstacleDetected()) {
-      STOP();   // keep braking
-    }
-  } else {
-    ADVANCE();
+    if (cmd == "forward" || cmd == "f")      { ADVANCE(); Serial.println("Moving FORWARD"); }
+    else if (cmd == "back" || cmd == "b")    { BACK();    Serial.println("Moving BACKWARD"); }
+    else if (cmd == "left" || cmd == "l")    { ROTATE_LEFT();  Serial.println("Rotating LEFT"); }
+    else if (cmd == "right" || cmd == "r")   { ROTATE_RIGHT(); Serial.println("Rotating RIGHT"); }
+    else if (cmd == "stop" || cmd == "s")    { FULL_STOP(); Serial.println("STOPPED"); }
+    else if (cmd == "open")                  { openBox(); }
+    else if (cmd == "close")                 { closeBox(); }
   }
+
+  // === Obstacle Handling ===
+  if (obstacleDetected()) {
+    if (lastUserCommand == "forward") {
+      TEMPORARY_STOP();                    // Only physical stop
+      Serial.println("Obstacle Detected - Stopped");
+    }
+  } 
+  else {
+    // No obstacle → Resume if user wanted forward
+    if (lastUserCommand == "forward") {
+      ADVANCE();
+    }
+  }
+
+  delay(30);
 }
