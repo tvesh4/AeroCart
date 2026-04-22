@@ -22,6 +22,7 @@ try:
     import headshots
     import model_training
     import jetsonnanoUWB
+    import jetson_gate_guide
     import face_recognition
     import face_rec
     import cv2
@@ -70,9 +71,7 @@ class UserProfile:
 class ArduinoHandler:
     """Manages communication with Arduino Mega"""
 
-    def __init__(self, port: str = "/dev/ttyACM0", baud: int = 115200):
-    #1a86:7523
-    # def __init__(self, port: str, baud: int = 115200, name= "Arduino"):
+    def __init__(self, port: str = "/dev/ttyUSB0", baud: int = 115200):#1a86:7523
         self.port = port
         self.baud = baud
         self.ser = None
@@ -112,7 +111,7 @@ class ArduinoHandler:
 
         try:
             # Format: O for open
-            command = "O\n"
+            command = "open"
             self.ser.write(command.encode())
             logger.info("Compartment open command sent")
             return True
@@ -127,7 +126,7 @@ class ArduinoHandler:
 
         try:
             # Format: C for close
-            command = "C\n"
+            command = "close"
             self.ser.write(command.encode())
             logger.info("Compartment close command sent")
             return True
@@ -164,8 +163,6 @@ class ButtonHandler:
         # Try to import RPi.GPIO if available
         try:
             import Jetson.GPIO as GPIO
-            # GPIO.setmode(GPIO.BOARD)
-            # GPIO.setup(self.pin, GPIO.IN)
             self.gpio = GPIO
             self.has_gpio = True
             self._setup_gpio()
@@ -251,6 +248,7 @@ class RobotFSM:
         # Initialize hardware handlers
         logger.info("Initializing hardware...")
         self.arduino = ArduinoHandler()
+        self.arduino.connect()
         self.button = ButtonHandler()
         # self.face_engine = FacialRecognitionEngine()
 
@@ -275,22 +273,6 @@ class RobotFSM:
             import glob
             ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
 
-            # if len(ports) >= 2:
-                # self.master_uwb = DWM1001Handler(ports[0], name="MASTER")
-                # self.slave_uwb = DWM1001Handler(ports[1], name="SLAVE")
-
-                # if self.master_uwb.connect() and self.slave_uwb.connect():
-                #     self.master_uwb.start_continuous_reading()
-                #     self.slave_uwb.start_continuous_reading()
-                #     self.uwb_initialized = True
-                #     self.decision_engine = RobotDecisionEngine(target_distance=1.0)
-                #     logger.info("✓ UWB modules initialized successfully")
-                # else:
-                #     logger.warning("Failed to connect UWB modules")
-                #     self.uwb_initialized = False
-            # else:
-            #     logger.warning(f"Not enough UWB ports found: {len(ports)} (need 2)")
-            #     self.uwb_initialized = False
 
         except Exception as e:
             logger.error(f"UWB initialization error: {e}")
@@ -307,6 +289,26 @@ class RobotFSM:
             logger.info("\n[INFO] Shutdown signal received")
         finally:
             self.cleanup()
+
+    def reset_fsm_flags(self):
+        """Resets all state-specific initialization flags for a new run"""
+        # self._idle_logged = False
+        # self._training_started = False
+        # self._opening_started = False
+        # self._closing_started = False
+        # self._following_started = False
+        # self._storage_started = False
+        # self.current_user = None
+        # self.user_name = None
+        delattr(self, "_idle_logged")
+        delattr(self, "_training_started")
+        delattr(self, "_opening_started")
+        delattr(self, "_closing_started")
+        delattr(self, "_following_started")
+        delattr(self, "_storage_started")
+        self.current_user = None
+        self.user_name = None
+        logger.info("FSM flags reset for new user cycle.")
 
     def process_state(self):
         """Process current state and handle transitions"""
@@ -360,7 +362,8 @@ class RobotFSM:
                 self.user_name = self._get_user_name()
 
 
-                train_status = headshots.capture_photos(self.user_name)
+                if (self.user_name == "admin"): self._training_started = True
+                else: train_status = headshots.capture_photos(self.user_name)
                 # Train the model
                 logger.info("Training facial recognition model...")
                 # self._train_model()
@@ -373,7 +376,7 @@ class RobotFSM:
 
                 if train_status:
                     model_training.train_model()
-                    logger.log("Training complete")
+                    logger.info("Training complete. Please press button to continue.")
                     self._training_started = True
             except Exception as e:
                 logger.error(f"Training failed: {e}")
@@ -445,35 +448,9 @@ class RobotFSM:
         """FOLLOWING state - follow user using UWB"""
         if not hasattr(self, '_following_started'):
             logger.info(f"[STATE] FOLLOWING - Following user with UWB")
-
-            # if not self.uwb_initialized:
-            #     logger.error("UWB not initialized - cannot follow")
-            #     self.next_state = SystemState.IDLE
-            #     return
-            #
-            # self._following_started = True
-
-        # Get UWB data
-        # if self.uwb_initialized and self.decision_engine:
-        #     slave_data = self.slave_uwb.get_latest_data() if self.slave_uwb else None
-        #
-        #     if slave_data and slave_data.valid:
-        #         # Calculate motor commands
-        #         command = self.decision_engine.calculate_motor_speeds(
-        #             slave_data.distance,
-        #             slave_data.quality
-        #         )
-        #
-        #         # Store UWB distance for storage check
-        #         self.current_user.uwb_distance = slave_data.distance
-        #         self.current_user.last_seen = time.time()
-        #
-        #         # Send motor commands to Arduino
-        #         if self.arduino.connected:
-        #             self.arduino.send_motor_command(command.left_speed, command.right_speed)
-        #
-        #         logger.debug(f"Following - Distance: {slave_data.distance:.2f}m, "
-        #                    f"Speed: L{command.left_speed} R{command.right_speed}")
+            self.arduino.disconnect()
+            jetson_gate_guide.GateGuidanceSystem()
+            self.arduino.connect()
 
         # Check for button press to enter storage state
         button_pressed = self.button.check_press()
@@ -507,6 +484,8 @@ class RobotFSM:
         face_ok = False
         recognized_users = face_rec.face_rec()
         logger.info(f"Found users: {recognized_users}")
+        print(self.user_name)
+        print(recognized_users)
 
         if recognized_users != None:
             if self.user_name in recognized_users:
@@ -522,9 +501,15 @@ class RobotFSM:
             logger.info("✓ User verified! Opening compartment for unloading")
             if self.arduino.connected:
                 self.arduino.open_compartment()
+                time.sleep(3)
+                button_pressed = self.button.check_press()
+                while button_pressed == False:
+                    button_pressed = self.button.check_press()
+                self.arduino.close_compartment()
 
             # Return to IDLE after user unloads
             time.sleep(3)  # Give user time to interact
+            self.reset_fsm_flags()
             logger.info("Returning to IDLE state")
             self.next_state = SystemState.IDLE
             self._storage_started = False
@@ -548,49 +533,6 @@ class RobotFSM:
         except:
             return "USER"
 
-    # def _train_model(self):
-    #     """Train facial recognition model"""
-    #     try:
-    #         # This integrates with model_training.py logic
-    #         from imutils import paths
-    #
-    #         logger.info("Processing faces for training...")
-    #         imagePaths = list(paths.list_images("dataset"))
-    #
-    #         if not imagePaths:
-    #             logger.warning("No images found in dataset")
-    #             return
-    #
-    #         knownEncodings = []
-    #         knownNames = []
-    #
-    #         for (i, imagePath) in enumerate(imagePaths):
-    #             logger.debug(f"Processing image {i + 1}/{len(imagePaths)}")
-    #             name = imagePath.split(os.path.sep)[-2]
-    #
-    #             image = cv2.imread(imagePath)
-    #             if image is None:
-    #                 continue
-    #
-    #             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    #
-    #             boxes = face_recognition.face_locations(rgb, model="hog")
-    #             encodings = face_recognition.face_encodings(rgb, boxes)
-    #
-    #             for encoding in encodings:
-    #                 knownEncodings.append(encoding)
-    #                 knownNames.append(name)
-    #
-    #         logger.info(f"Serializing {len(knownEncodings)} encodings...")
-    #         data = {"encodings": knownEncodings, "names": knownNames}
-    #         with open("encodings.pickle", "wb") as f:
-    #             f.write(pickle.dumps(data))
-    #
-    #         logger.info("Training complete. Encodings saved to 'encodings.pickle'")
-    #
-    #     except Exception as e:
-    #         logger.error(f"Model training error: {e}")
-
     def cleanup(self):
         """Cleanup resources"""
         logger.info("\n[INFO] Cleaning up resources...")
@@ -609,9 +551,7 @@ class RobotFSM:
         if self.slave_uwb:
             self.slave_uwb.stop()
 
-        # Cleanup face recognition
-        if self.face_engine:
-            self.face_engine.cleanup()
+
 
         # Cleanup button GPIO
         if self.button:
