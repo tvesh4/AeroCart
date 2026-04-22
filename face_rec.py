@@ -63,7 +63,7 @@ def begin():
 
 
 def process_frame(frame):
-    global face_locations, face_encodings, face_names
+    global face_locations, face_encodings, face_names, matches
 
     # Resize the frame using cv_scaler to increase performance (less pixels processed, less time spent)
     resized_frame = cv2.resize(frame, (0, 0), fx=(1 / cv_scaler), fy=(1 / cv_scaler))
@@ -157,6 +157,8 @@ def face_rec():
     # By breaking the loop we run this code here which closes everything
     cv2.destroyAllWindows()
     cap.release()
+    return matches
 
 if __name__ == "__main__":
     empty = face_rec()
+    print(empty)
