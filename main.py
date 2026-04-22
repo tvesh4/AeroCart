@@ -19,9 +19,9 @@ from typing import Optional
 
 # Import project modules
 try:
-    from headshots import capture_photos
-    from model_training import knownEncodings, knownNames
-    from jetsonnanoUWB import DWM1001Handler, RobotDecisionEngine, RobotState, RobotCommand
+    import headshots
+    import model_training
+    import jetsonnanoUWB
     import face_recognition
     import cv2
     import numpy as np
@@ -69,7 +69,9 @@ class UserProfile:
 class ArduinoHandler:
     """Manages communication with Arduino Mega"""
 
-    def __init__(self, port: str = "/dev/ttyACM0", baud: int = 9600):
+    def __init__(self, port: str = "/dev/ttyACM0", baud: int = 115200):
+    #1a86:7523
+    # def __init__(self, port: str, baud: int = 115200, name= "Arduino"):
         self.port = port
         self.baud = baud
         self.ser = None
@@ -223,121 +225,6 @@ class ButtonHandler:
 # Facial Recognition Engine
 # ============================================================
 
-class FacialRecognitionEngine:
-    """Handles facial recognition and user identification"""
-
-    def __init__(self, encoding_file: str = "encodings.pickle"):
-        self.encoding_file = encoding_file
-        self.known_encodings = []
-        self.known_names = []
-        self.cap = None
-        self.initialized = False
-
-        self._load_encodings()
-        self._initialize_camera()
-
-    def _load_encodings(self) -> bool:
-        """Load pre-trained face encodings"""
-        if not os.path.exists(self.encoding_file):
-            logger.warning(f"Encoding file not found: {self.encoding_file}")
-            return False
-
-        try:
-            with open(self.encoding_file, "rb") as f:
-                data = pickle.loads(f.read())
-                self.known_encodings = data["encodings"]
-                self.known_names = data["names"]
-            logger.info(f"✓ Loaded {len(self.known_encodings)} face encodings")
-            return len(self.known_encodings) > 0
-        except Exception as e:
-            logger.error(f"Failed to load encodings: {e}")
-            return False
-
-    def _initialize_camera(self):
-        """Initialize camera for face recognition"""
-        try:
-            # Try CSI camera first (Jetson Nano)
-            pipeline = self._gstreamer_pipeline()
-            self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-
-            if not self.cap.isOpened():
-                # Fallback to USB camera
-                self.cap = cv2.VideoCapture(0)
-
-            if self.cap.isOpened():
-                logger.info("✓ Camera initialized")
-                self.initialized = True
-            else:
-                logger.warning("Camera initialization failed")
-                self.initialized = False
-        except Exception as e:
-            logger.error(f"Camera initialization error: {e}")
-            self.initialized = False
-
-    def _gstreamer_pipeline(self, sensor_id=0, capture_width=640, capture_height=480,
-                           display_width=640, display_height=480, framerate=30, flip_method=0):
-        """GStreamer pipeline for Jetson Nano CSI camera"""
-        return (
-            "nvarguscamerasrc sensor-id=%d ! "
-            "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
-            "nvvidconv flip-method=%d ! "
-            "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
-            "videoconvert ! "
-            "video/x-raw, format=(string)BGR ! appsink"
-            % (sensor_id, capture_width, capture_height, framerate, flip_method, display_width, display_height)
-        )
-
-    def recognize_face(self, tolerance: float = 0.5) -> Optional[UserProfile]:
-        """Recognize face in current frame"""
-        if not self.initialized or not self.cap or not self.cap.isOpened():
-            logger.warning("Camera not initialized")
-            return None
-
-        if len(self.known_encodings) == 0:
-            logger.warning("No trained face encodings available")
-            return None
-
-        try:
-            ret, frame = self.cap.read()
-            if not ret or frame is None:
-                return None
-
-            # Resize frame for faster processing
-            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-
-            # Find faces and encodings
-            face_locations = face_recognition.face_locations(rgb_small_frame)
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-
-            if len(face_encodings) == 0:
-                return None
-
-            # Use first face found
-            face_encoding = face_encodings[0]
-
-            # Compare with known encodings
-            matches = face_recognition.compare_faces(
-                self.known_encodings, face_encoding, tolerance=tolerance
-            )
-            face_distances = face_recognition.face_distance(
-                self.known_encodings, face_encoding
-            )
-
-            best_match_index = np.argmin(face_distances)
-
-            if matches[best_match_index]:
-                name = self.known_names[best_match_index]
-                logger.info(f"User recognized: {name}")
-                profile = UserProfile(name=name, face_encoding=face_encoding)
-                return profile
-            else:
-                logger.info("Unknown person detected")
-                return None
-
-        except Exception as e:
-            logger.error(f"Face recognition error: {e}")
-            return None
 
     def cleanup(self):
         """Release camera resources"""
@@ -354,6 +241,7 @@ class RobotFSM:
     """Finite State Machine for robot operation"""
 
     def __init__(self):
+        self.previous_state = SystemState.IDLE
         self.state = SystemState.IDLE
         self.next_state = SystemState.IDLE
         self.current_user = None
@@ -363,7 +251,7 @@ class RobotFSM:
         logger.info("Initializing hardware...")
         self.arduino = ArduinoHandler()
         self.button = ButtonHandler()
-        self.face_engine = FacialRecognitionEngine()
+        # self.face_engine = FacialRecognitionEngine()
 
         # Initialize UWB handlers (ports may need adjustment)
         self.master_uwb = None
@@ -385,22 +273,22 @@ class RobotFSM:
             import glob
             ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
 
-            if len(ports) >= 2:
-                self.master_uwb = DWM1001Handler(ports[0], name="MASTER")
-                self.slave_uwb = DWM1001Handler(ports[1], name="SLAVE")
+            # if len(ports) >= 2:
+                # self.master_uwb = DWM1001Handler(ports[0], name="MASTER")
+                # self.slave_uwb = DWM1001Handler(ports[1], name="SLAVE")
 
-                if self.master_uwb.connect() and self.slave_uwb.connect():
-                    self.master_uwb.start_continuous_reading()
-                    self.slave_uwb.start_continuous_reading()
-                    self.uwb_initialized = True
-                    self.decision_engine = RobotDecisionEngine(target_distance=1.0)
-                    logger.info("✓ UWB modules initialized successfully")
-                else:
-                    logger.warning("Failed to connect UWB modules")
-                    self.uwb_initialized = False
-            else:
-                logger.warning(f"Not enough UWB ports found: {len(ports)} (need 2)")
-                self.uwb_initialized = False
+                # if self.master_uwb.connect() and self.slave_uwb.connect():
+                #     self.master_uwb.start_continuous_reading()
+                #     self.slave_uwb.start_continuous_reading()
+                #     self.uwb_initialized = True
+                #     self.decision_engine = RobotDecisionEngine(target_distance=1.0)
+                #     logger.info("✓ UWB modules initialized successfully")
+                # else:
+                #     logger.warning("Failed to connect UWB modules")
+                #     self.uwb_initialized = False
+            # else:
+            #     logger.warning(f"Not enough UWB ports found: {len(ports)} (need 2)")
+            #     self.uwb_initialized = False
 
         except Exception as e:
             logger.error(f"UWB initialization error: {e}")
@@ -437,6 +325,7 @@ class RobotFSM:
             self.running = False
 
         # Update state
+        self.previous_state = self.state
         self.state = self.next_state
 
     def _state_idle(self):
@@ -459,6 +348,7 @@ class RobotFSM:
 
     def _state_training(self):
         """TRAINING state - facial recognition model training"""
+        train_status = False
         if not hasattr(self, '_training_started'):
             logger.info(f"[STATE] TRAINING - Starting facial recognition training")
             logger.info("Taking headshots for user identification...")
@@ -466,19 +356,22 @@ class RobotFSM:
             try:
                 # Capture photos for the user
                 user_name = self._get_user_name()
-                capture_photos(user_name)
 
+
+                train_status = headshots.capture_photos(user_name)
                 # Train the model
                 logger.info("Training facial recognition model...")
-                self._train_model()
+                # self._train_model()
 
                 # Load updated encodings
-                self.face_engine._load_encodings()
+                # self.face_engine._load_encodings()
 
-                self.current_user = UserProfile(name=user_name)
-                logger.info(f"Training complete for user: {user_name}")
+                # self.current_user = UserProfile(name=user_name)
+                # logger.info(f"Training complete for user: {user_name}")
 
-                self._training_started = True
+                if train_status:
+                    model_training.train_model()
+                    self._training_started = True
             except Exception as e:
                 logger.error(f"Training failed: {e}")
                 self.next_state = SystemState.IDLE
@@ -488,7 +381,7 @@ class RobotFSM:
         # Wait for button press to open compartment
         button_pressed = self.button.check_press()
 
-        if button_pressed:
+        if button_pressed & hasattr(self, '_training_started'):
             logger.info("Training complete - entering compartment opening state")
             self.next_state = SystemState.OPENING_COMPARTMENT
             self._training_started = False
@@ -550,34 +443,34 @@ class RobotFSM:
         if not hasattr(self, '_following_started'):
             logger.info(f"[STATE] FOLLOWING - Following user with UWB")
 
-            if not self.uwb_initialized:
-                logger.error("UWB not initialized - cannot follow")
-                self.next_state = SystemState.IDLE
-                return
-
-            self._following_started = True
+            # if not self.uwb_initialized:
+            #     logger.error("UWB not initialized - cannot follow")
+            #     self.next_state = SystemState.IDLE
+            #     return
+            #
+            # self._following_started = True
 
         # Get UWB data
-        if self.uwb_initialized and self.decision_engine:
-            slave_data = self.slave_uwb.get_latest_data() if self.slave_uwb else None
-
-            if slave_data and slave_data.valid:
-                # Calculate motor commands
-                command = self.decision_engine.calculate_motor_speeds(
-                    slave_data.distance,
-                    slave_data.quality
-                )
-
-                # Store UWB distance for storage check
-                self.current_user.uwb_distance = slave_data.distance
-                self.current_user.last_seen = time.time()
-
-                # Send motor commands to Arduino
-                if self.arduino.connected:
-                    self.arduino.send_motor_command(command.left_speed, command.right_speed)
-
-                logger.debug(f"Following - Distance: {slave_data.distance:.2f}m, "
-                           f"Speed: L{command.left_speed} R{command.right_speed}")
+        # if self.uwb_initialized and self.decision_engine:
+        #     slave_data = self.slave_uwb.get_latest_data() if self.slave_uwb else None
+        #
+        #     if slave_data and slave_data.valid:
+        #         # Calculate motor commands
+        #         command = self.decision_engine.calculate_motor_speeds(
+        #             slave_data.distance,
+        #             slave_data.quality
+        #         )
+        #
+        #         # Store UWB distance for storage check
+        #         self.current_user.uwb_distance = slave_data.distance
+        #         self.current_user.last_seen = time.time()
+        #
+        #         # Send motor commands to Arduino
+        #         if self.arduino.connected:
+        #             self.arduino.send_motor_command(command.left_speed, command.right_speed)
+        #
+        #         logger.debug(f"Following - Distance: {slave_data.distance:.2f}m, "
+        #                    f"Speed: L{command.left_speed} R{command.right_speed}")
 
         # Check for button press to enter storage state
         button_pressed = self.button.check_press()
@@ -595,16 +488,17 @@ class RobotFSM:
             self.storage_start_time = time.time()
 
         # Check condition 1: UWB distance (user is close)
-        uwb_ok = False
-        if self.current_user:
-            time_since_uwb = time.time() - self.current_user.last_seen
-            uwb_distance_ok = (
-                self.current_user.uwb_distance > 0 and
-                self.current_user.uwb_distance < 1.5 and  # Within 1.5 meters
-                time_since_uwb < 2.0  # Recent reading
-            )
-            uwb_ok = uwb_distance_ok
-            logger.info(f"UWB Check: Distance={self.current_user.uwb_distance:.2f}m, OK={uwb_ok}")
+        # uwb_ok = False
+        # if self.current_user:
+        #     time_since_uwb = time.time() - self.current_user.last_seen
+        #     uwb_distance_ok = (
+        #         self.current_user.uwb_distance > 0 and
+        #         self.current_user.uwb_distance < 1.5 and  # Within 1.5 meters
+        #         time_since_uwb < 2.0  # Recent reading
+        #     )
+        #     uwb_ok = uwb_distance_ok
+        #     logger.info(f"UWB Check: Distance={self.current_user.uwb_distance:.2f}m, OK={uwb_ok}")
+        uwb_ok = True
 
         # Check condition 2: Facial recognition (correct user)
         face_ok = True
@@ -650,48 +544,48 @@ class RobotFSM:
         except:
             return "USER"
 
-    def _train_model(self):
-        """Train facial recognition model"""
-        try:
-            # This integrates with model_training.py logic
-            from imutils import paths
-
-            logger.info("Processing faces for training...")
-            imagePaths = list(paths.list_images("dataset"))
-
-            if not imagePaths:
-                logger.warning("No images found in dataset")
-                return
-
-            knownEncodings = []
-            knownNames = []
-
-            for (i, imagePath) in enumerate(imagePaths):
-                logger.debug(f"Processing image {i + 1}/{len(imagePaths)}")
-                name = imagePath.split(os.path.sep)[-2]
-
-                image = cv2.imread(imagePath)
-                if image is None:
-                    continue
-
-                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-                boxes = face_recognition.face_locations(rgb, model="hog")
-                encodings = face_recognition.face_encodings(rgb, boxes)
-
-                for encoding in encodings:
-                    knownEncodings.append(encoding)
-                    knownNames.append(name)
-
-            logger.info(f"Serializing {len(knownEncodings)} encodings...")
-            data = {"encodings": knownEncodings, "names": knownNames}
-            with open("encodings.pickle", "wb") as f:
-                f.write(pickle.dumps(data))
-
-            logger.info("Training complete. Encodings saved to 'encodings.pickle'")
-
-        except Exception as e:
-            logger.error(f"Model training error: {e}")
+    # def _train_model(self):
+    #     """Train facial recognition model"""
+    #     try:
+    #         # This integrates with model_training.py logic
+    #         from imutils import paths
+    #
+    #         logger.info("Processing faces for training...")
+    #         imagePaths = list(paths.list_images("dataset"))
+    #
+    #         if not imagePaths:
+    #             logger.warning("No images found in dataset")
+    #             return
+    #
+    #         knownEncodings = []
+    #         knownNames = []
+    #
+    #         for (i, imagePath) in enumerate(imagePaths):
+    #             logger.debug(f"Processing image {i + 1}/{len(imagePaths)}")
+    #             name = imagePath.split(os.path.sep)[-2]
+    #
+    #             image = cv2.imread(imagePath)
+    #             if image is None:
+    #                 continue
+    #
+    #             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    #
+    #             boxes = face_recognition.face_locations(rgb, model="hog")
+    #             encodings = face_recognition.face_encodings(rgb, boxes)
+    #
+    #             for encoding in encodings:
+    #                 knownEncodings.append(encoding)
+    #                 knownNames.append(name)
+    #
+    #         logger.info(f"Serializing {len(knownEncodings)} encodings...")
+    #         data = {"encodings": knownEncodings, "names": knownNames}
+    #         with open("encodings.pickle", "wb") as f:
+    #             f.write(pickle.dumps(data))
+    #
+    #         logger.info("Training complete. Encodings saved to 'encodings.pickle'")
+    #
+    #     except Exception as e:
+    #         logger.error(f"Model training error: {e}")
 
     def cleanup(self):
         """Cleanup resources"""

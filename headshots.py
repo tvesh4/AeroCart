@@ -97,6 +97,12 @@ def draw_face_box(frame):
 
 
 def capture_photos(name):
+    import cv2
+    import os
+    from datetime import datetime
+    import time
+    import face_recognition
+
     start_second = time.time()
     folder = create_folder(name)
 
@@ -117,51 +123,65 @@ def capture_photos(name):
 
     while True:
         ret, frame = cap.read()
+
+        # SAFETY GATE: If ret is False, the frame is empty
         if not ret or frame is None:
-            print("Warning: Failed to grab frame.")
-            continue  # Skip this iteration and try again
+            print("Warning: Failed to grab frame. Check camera connection.")
+            continue  # Skip the rest of the loop and try again
 
-        # Detect face and draw box if found
-        display_frame, face_detected = draw_face_box(frame)
+        try:
+            # Only resize if we actually have a frame
+            resized_frame = cv2.resize(frame, (640, 480))
 
-        # Add status text
-        status_text = "FACE DETECTED" if face_detected else "NO FACE"
-        status_color = (0, 255, 0) if face_detected else (0, 0, 255)
-        cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0, status_color, 2)
+            # Your face detection logic here...
+            # Detect face and draw box if found
+            display_frame, face_detected = draw_face_box(frame)
 
-        # Display the frame
-        cv2.imshow('Capture', display_frame)
+            # Add status text
+            status_text = "FACE DETECTED" if face_detected else "NO FACE"
+            status_color = (0, 255, 0) if face_detected else (0, 0, 255)
+            cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0, status_color, 2)
 
-        key = cv2.waitKey(1) & 0xFF
+            # Display the frame
+            cv2.imshow('Capture', display_frame)
 
-        # Check for quit key
-        if key == ord('q'):
-            break
+            key = cv2.waitKey(1) & 0xFF
 
-        curr_second = time.time()
-        time_elapsed = curr_second - start_second
+            # Check for quit key
+            if key == ord('q'):
+                break
 
-        # Auto-capture logic: capture if face detected, with 0.3s delay between captures
-        if face_detected and photo_count < 30 and time_elapsed < 30:
-            if curr_second - last_capture_time > 0.3:  # Prevent capturing too fast
-                photo_count += 1
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"{name}_{timestamp}_{photo_count}.jpg"
-                filepath = os.path.join(folder, filename)
-                cv2.imwrite(filepath, frame)  # Save original frame, not display_frame
-                print(f"Photo {photo_count} saved: {filepath}")
-                last_capture_time = curr_second
+            curr_second = time.time()
+            time_elapsed = curr_second - start_second
 
-        # Exit conditions: 5 photos captured or 30 seconds elapsed
-        if photo_count >= 30 or time_elapsed >= 30:
-            break
+            # Auto-capture logic: capture if face detected, with 0.3s delay between captures
+            if face_detected and photo_count < 30 and time_elapsed < 30:
+                if curr_second - last_capture_time > 0.3:  # Prevent capturing too fast
+                    photo_count += 1
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"{name}_{timestamp}_{photo_count}.jpg"
+                    filepath = os.path.join(folder, filename)
+                    cv2.imwrite(filepath, frame)  # Save original frame, not display_frame
+                    print(f"Photo {photo_count} saved: {filepath}")
+                    last_capture_time = curr_second
+
+            # Exit conditions: 30 photos captured or 30 seconds elapsed
+            if photo_count >= 30 or time_elapsed >= 30:
+                break
+
+        # cv2.imshow('Camera Feed', resized_frame)
+        except Exception as e:
+            print(f"Processing error: {e}")
 
     # Clean up
     cap.release()
     cv2.destroyAllWindows()
     print(f"Photo capture completed. {photo_count} photos saved for {name}.")
 
+    if(photo_count > 0): return True
+    else: return False
+
 
 if __name__ == "__main__":
-    capture_photos(PERSON_NAME)
+    empty = capture_photos(PERSON_NAME)

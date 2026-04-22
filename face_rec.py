@@ -32,33 +32,34 @@ def gstreamer_pipeline(
         )
     )
 
+def begin():
+    # Load pre-trained face encodings
+    global known_face_encodings, known_face_names, cap, face_locations, face_encodings, face_names, frame_count, start_time, fps, cv_scaler
+    print("[INFO] loading encodings...")
+    with open("encodings.pickle", "rb") as f:
+        data = pickle.loads(f.read())
+    known_face_encodings = data["encodings"]
+    known_face_names = data["names"]
 
-# Load pre-trained face encodings
-print("[INFO] loading encodings...")
-with open("encodings.pickle", "rb") as f:
-    data = pickle.loads(f.read())
-known_face_encodings = data["encodings"]
-known_face_names = data["names"]
+    if len(known_face_encodings) == 0:
+        print("WARNING: No face encodings detected.")
 
-if len(known_face_encodings) == 0:
-    print("WARNING: No face encodings detected.")
+    # Initialize the camera using GStreamer pipeline
+    cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0, capture_width=1920, capture_height=1080, display_width=960, display_height=540, framerate=30, flip_method=0), cv2.CAP_GSTREAMER)
 
-# Initialize the camera using GStreamer pipeline
-cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0, capture_width=1920, capture_height=1080, display_width=960, display_height=540, framerate=30, flip_method=0), cv2.CAP_GSTREAMER)
+    if not cap.isOpened():
+        print("Error: Could not open CSI camera.")
+        exit()
 
-if not cap.isOpened():
-    print("Error: Could not open CSI camera.")
-    exit()
+    # Initialize our variables
+    cv_scaler = 4  # this has to be a whole number
 
-# Initialize our variables
-cv_scaler = 4  # this has to be a whole number
-
-face_locations = []
-face_encodings = []
-face_names = []
-frame_count = 0
-start_time = time.time()
-fps = 0
+    face_locations = []
+    face_encodings = []
+    face_names = []
+    frame_count = 0
+    start_time = time.time()
+    fps = 0
 
 
 def process_frame(frame):
@@ -124,34 +125,38 @@ def calculate_fps():
         start_time = time.time()
     return fps
 
+def face_rec():
+    begin()
+    while True:
+        # Capture a frame from camera
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            print("Warning: Failed to grab frame.")
+            continue
 
-while True:
-    # Capture a frame from camera
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print("Warning: Failed to grab frame.")
-        continue
+        # Process the frame with the function
+        processed_frame = process_frame(frame)
 
-    # Process the frame with the function
-    processed_frame = process_frame(frame)
+        # Get the text and boxes to be drawn based on the processed frame
+        display_frame = draw_results(processed_frame)
 
-    # Get the text and boxes to be drawn based on the processed frame
-    display_frame = draw_results(processed_frame)
+        # Calculate and update FPS
+        current_fps = calculate_fps()
 
-    # Calculate and update FPS
-    current_fps = calculate_fps()
+        # Attach FPS counter to the text and boxes
+        cv2.putText(display_frame, f"FPS: {current_fps:.1f}", (display_frame.shape[1] - 150, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-    # Attach FPS counter to the text and boxes
-    cv2.putText(display_frame, f"FPS: {current_fps:.1f}", (display_frame.shape[1] - 150, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # Display everything over the video feed.
+        cv2.imshow('Face Rec Running', display_frame)
 
-    # Display everything over the video feed.
-    cv2.imshow('Face Rec Running', display_frame)
+        # Break the loop and stop the script if 'q' is pressed
+        if cv2.waitKey(1) == ord("q"):
+            break
 
-    # Break the loop and stop the script if 'q' is pressed
-    if cv2.waitKey(1) == ord("q"):
-        break
+    # By breaking the loop we run this code here which closes everything
+    cv2.destroyAllWindows()
+    cap.release()
 
-# By breaking the loop we run this code here which closes everything
-cv2.destroyAllWindows()
-cap.release()
+if __name__ == "__main__":
+    empty = face_rec()
