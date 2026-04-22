@@ -118,7 +118,7 @@ def capture_photos(name):
 
     print(f"Taking photos for {name}.")
     print(f"Position your face in front of the camera.")
-    print(f"Auto-capturing up to 30 photos within 30 seconds when face is detected.")
+    print(f"Auto-capturing up to 5 photos within 30 seconds when face is detected.")
     print(f"Press 'q' to quit early.\n")
 
     while True:
@@ -156,7 +156,7 @@ def capture_photos(name):
             time_elapsed = curr_second - start_second
 
             # Auto-capture logic: capture if face detected, with 0.3s delay between captures
-            if face_detected and photo_count < 30 and time_elapsed < 30:
+            if face_detected and photo_count < 5 and time_elapsed < 30:
                 if curr_second - last_capture_time > 0.3:  # Prevent capturing too fast
                     photo_count += 1
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -166,8 +166,8 @@ def capture_photos(name):
                     print(f"Photo {photo_count} saved: {filepath}")
                     last_capture_time = curr_second
 
-            # Exit conditions: 30 photos captured or 30 seconds elapsed
-            if photo_count >= 30 or time_elapsed >= 30:
+            # Exit conditions: 5 photos captured or 30 seconds elapsed
+            if photo_count >= 5 or time_elapsed >= 30:
                 break
 
         # cv2.imshow('Camera Feed', resized_frame)
@@ -179,7 +179,7 @@ def capture_photos(name):
     cv2.destroyAllWindows()
     print(f"Photo capture completed. {photo_count} photos saved for {name}.")
 
-    if(photo_count > 0): return True
+    if(photo_count > 3): return True
     else: return False
 
 

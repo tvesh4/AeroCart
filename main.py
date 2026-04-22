@@ -366,13 +366,6 @@ class RobotFSM:
                 else: train_status = headshots.capture_photos(self.user_name)
                 # Train the model
                 logger.info("Training facial recognition model...")
-                # self._train_model()
-
-                # Load updated encodings
-                # self.face_engine._load_encodings()
-
-                # self.current_user = UserProfile(name=user_name)
-                # logger.info(f"Training complete for user: {user_name}")
 
                 if train_status:
                     model_training.train_model()
@@ -510,13 +503,14 @@ class RobotFSM:
             # Return to IDLE after user unloads
             time.sleep(3)  # Give user time to interact
             self.reset_fsm_flags()
+            #TODO maybe clear the images and pickles generated in this, or can keep the images if building multi person system idk
             logger.info("Returning to IDLE state")
             self.next_state = SystemState.IDLE
             self._storage_started = False
             self.current_user = None
 
         # Timeout - return to FOLLOWING if verification fails
-        elif time.time() - self.storage_start_time > 5.0:
+        elif time.time() - self.storage_start_time > 15.0:
             logger.warning("Storage verification timeout - returning to FOLLOWING")
             self.next_state = SystemState.FOLLOWING
             self._storage_started = False
