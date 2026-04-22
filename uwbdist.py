@@ -5,7 +5,6 @@ import numpy as np
 import math
 from collections import deque
 import threading
-import json
 
 # ============ Arduino Mega Communication ============
 class ArduinoMegaController:
@@ -149,6 +148,24 @@ class UWBDistanceSensor:
         if self.serial_connection and self.serial_connection.is_open:
             self.serial_connection.close()
 
+# ============ Gate Assignment Store ============
+class GateAssignmentStore:
+    """
+    In-code mapping for person -> gate assignment.
+    Keep gate values limited to 1 or 2.
+    """
+    def __init__(self):
+        self.face_gate_map = {
+            "person_1": 1,
+            "person_2": 2,
+        }
+    
+    def get_gate(self, person_id):
+        """Return assigned gate for person, defaulting to gate 1."""
+        gate_number = self.face_gate_map.get(str(person_id), 1)
+        return gate_number if gate_number in (1, 2) else 1
+
+
 # ============ Gate Database ============
 class GateDatabase:
     def __init__(self):
@@ -156,33 +173,12 @@ class GateDatabase:
         self.gate_distances_from_start = {
             1: 2.5,   # Gate 1 is 2.5 meters from start
             2: 3.0,   # Gate 2 is 3.0 meters from start
-            3: 2.0,   # Gate 3 is 2.0 meters from start
-            4: 3.5,   # Gate 4 is 3.5 meters from start
-            5: 4.0,   # Gate 5 is 4.0 meters from start
-            6: 2.8,   # Gate 6 is 2.8 meters from start
-            7: 3.2,   # Gate 7 is 3.2 meters from start
-            8: 1.8,   # Gate 8 is 1.8 meters from start
-            9: 4.5,   # Gate 9 is 4.5 meters from start
-            10: 5.0,  # Gate 10 is 5.0 meters from start
         }
-        
-        # Face to gate mapping
-        self.face_gate_map = {
-            "person_1": 1,
-            "person_2": 2,
-            "person_3": 3,
-            "person_4": 4,
-            "person_5": 5,
-            "person_6": 6,
-            "person_7": 7,
-            "person_8": 8,
-            "person_9": 9,
-            "person_10": 10,
-        }
+        self.assignment_store = GateAssignmentStore()
     
     def get_gate_for_face(self, person_id):
         """Get gate number for recognized face"""
-        return self.face_gate_map.get(person_id, 1)
+        return self.assignment_store.get_gate(person_id)
     
     def get_distance_from_start(self, gate_number):
         """Get distance from start point for specific gate"""
