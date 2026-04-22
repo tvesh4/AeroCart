@@ -6,30 +6,30 @@ import pickle
 
 
 def gstreamer_pipeline(
-    sensor_id=0,
-    capture_width=1920,
-    capture_height=1080,
-    display_width=960,
-    display_height=540,
-    framerate=30,
-    flip_method=0,
+        sensor_id=0,
+        capture_width=1920,
+        capture_height=1080,
+        display_width=960,
+        display_height=540,
+        framerate=30,
+        flip_method=0,
 ):
     return (
-        "nvarguscamerasrc sensor-id=%d ! "
-        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
-        "nvvidconv flip-method=%d ! "
-        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
-        "videoconvert ! "
-        "video/x-raw, format=(string)BGR ! appsink"
-        % (
-            sensor_id,
-            capture_width,
-            capture_height,
-            framerate,
-            flip_method,
-            display_width,
-            display_height,
-        )
+            "nvarguscamerasrc sensor-id=%d ! "
+            "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+            "nvvidconv flip-method=%d ! "
+            "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+            "videoconvert ! "
+            "video/x-raw, format=(string)BGR ! appsink"
+            % (
+                sensor_id,
+                capture_width,
+                capture_height,
+                framerate,
+                flip_method,
+                display_width,
+                display_height,
+            )
     )
 
 def begin():
@@ -45,7 +45,9 @@ def begin():
         print("WARNING: No face encodings detected.")
 
     # Initialize the camera using GStreamer pipeline
-    cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0, capture_width=1920, capture_height=1080, display_width=960, display_height=540, framerate=30, flip_method=0), cv2.CAP_GSTREAMER)
+    cap = cv2.VideoCapture(
+        gstreamer_pipeline(sensor_id=0, capture_width=1920, capture_height=1080, display_width=960, display_height=540,
+                           framerate=30, flip_method=0), cv2.CAP_GSTREAMER)
 
     if not cap.isOpened():
         print("Error: Could not open CSI camera.")
@@ -78,19 +80,21 @@ def process_frame(frame):
     face_names = []
     for face_encoding in face_encodings:
         name = "Unknown"
-        
+
         # Only compare if we have known face encodings
         if len(known_face_encodings) > 0:
             # See if the face is a match for the known face(s)
             matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.7)
-            
+
             # Use the known face with the smallest distance to the new face
             face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
             best_match_index = np.argmin(face_distances)
             if matches[best_match_index]:
                 name = known_face_names[best_match_index]
-        
+
         face_names.append(name)
+        if name not in ident_faces:
+            ident_faces.append(name)
 
     return frame
 
@@ -125,9 +129,13 @@ def calculate_fps():
         start_time = time.time()
     return fps
 
+
 def face_rec():
+    global ident_faces
+    ident_faces = []
     begin()
-    while True:
+    found_face = False
+    while found_face == False:
         # Capture a frame from camera
         ret, frame = cap.read()
         if not ret or frame is None:
@@ -153,11 +161,14 @@ def face_rec():
         # Break the loop and stop the script if 'q' is pressed
         if cv2.waitKey(1) == ord("q"):
             break
+        if len(ident_faces) > 0:
+            found_face = True
 
     # By breaking the loop we run this code here which closes everything
     cv2.destroyAllWindows()
     cap.release()
-    return matches
+    return ident_faces
+
 
 if __name__ == "__main__":
     empty = face_rec()

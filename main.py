@@ -23,6 +23,7 @@ try:
     import model_training
     import jetsonnanoUWB
     import face_recognition
+    import face_rec
     import cv2
     import numpy as np
 except ImportError as e:
@@ -261,6 +262,7 @@ class RobotFSM:
 
         # Robot state for following
         self.decision_engine = None
+        self.user_name = None
 
         logger.info("=" * 60)
         logger.info("AeroCart Robot FSM Initialized")
@@ -355,10 +357,10 @@ class RobotFSM:
 
             try:
                 # Capture photos for the user
-                user_name = self._get_user_name()
+                self.user_name = self._get_user_name()
 
 
-                train_status = headshots.capture_photos(user_name)
+                train_status = headshots.capture_photos(self.user_name)
                 # Train the model
                 logger.info("Training facial recognition model...")
                 # self._train_model()
@@ -371,6 +373,7 @@ class RobotFSM:
 
                 if train_status:
                     model_training.train_model()
+                    logger.log("Training complete")
                     self._training_started = True
             except Exception as e:
                 logger.error(f"Training failed: {e}")
@@ -501,17 +504,18 @@ class RobotFSM:
         uwb_ok = True
 
         # Check condition 2: Facial recognition (correct user)
-        face_ok = True
-        # recognized_user = self.face_engine.recognize_face()
+        face_ok = False
+        recognized_users = face_rec.face_rec()
+        logger.info(f"Found users: {recognized_users}")
 
-        # if recognifzed_user:
-        #     if self.current_user and recognized_user.name == self.current_user.name:
-        #         face_ok = True
-        #         logger.info(f"Face Check: User {recognized_user.name} verified, OK=True")
-        #     else:
-        #         logger.warning(f"Face Check: Unknown user {recognized_user.name}")
-        # else:
-        #     logger.info("Face Check: No face detected")
+        if recognized_users != None:
+            if self.user_name in recognized_users:
+                face_ok = True
+                logger.info(f"Face Check: User {self.user_name} verified, OK=True")
+            else:
+                logger.warning(f"Face Check: Unknown user {self.user_name}")
+        else:
+            logger.info("Face Check: No face detected")
 
         # If both conditions met, unlock compartment
         if uwb_ok and face_ok:
