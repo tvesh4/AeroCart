@@ -300,15 +300,37 @@ class RobotFSM:
         # self._storage_started = False
         # self.current_user = None
         # self.user_name = None
-        delattr(self, "_idle_logged")
-        delattr(self, "_training_started")
-        delattr(self, "_opening_started")
-        delattr(self, "_closing_started")
-        delattr(self, "_following_started")
-        delattr(self, "_storage_started")
+        for attr_name in [
+            "_idle_logged",
+            "_training_started",
+            "_opening_started",
+            "_closing_started",
+            "_following_started",
+            "_storage_started",
+            "_known_user"
+        ]:
+            if hasattr(self, attr_name):
+                delattr(self, attr_name)
         self.current_user = None
         self.user_name = None
         logger.info("FSM flags reset for new user cycle.")
+
+    def _recognize_users(self) -> list:
+        """Run face recognition and normalize the returned user list."""
+        try:
+            recognized_users = face_rec.face_rec()
+        except SystemExit:
+            logger.error("Face recognition exited unexpectedly (camera/model issue).")
+            return []
+        except Exception as e:
+            logger.error(f"Face recognition failed: {e}")
+            return []
+
+        if not recognized_users:
+            return []
+        if isinstance(recognized_users, str):
+            return [recognized_users]
+        return [name for name in recognized_users if name]
 
     def process_state(self):
         """Process current state and handle transitions"""
@@ -338,14 +360,10 @@ class RobotFSM:
             logger.info(f"[STATE] IDLE - Waiting for user button press")
             self._idle_logged = True
 
-        recognized_users = face_rec.face_rec()
-        try:
-            if recognized_users[0]!="Unknown":
-                logger.info(f"Recognized users in IDLE: {recognized_users}")
-                self._known_user = True
-
-
-        except: logger.info(f"Error with recognizing user")
+        recognized_users = self._recognize_users()
+        known_users = [name for name in recognized_users if name != "Unknown"]
+        if known_users:
+            logger.info(f"Recognized users in IDLE: {known_users}")
         # Check for button press
         button_pressed = self.button.check_press()
 
@@ -353,9 +371,8 @@ class RobotFSM:
             self.next_state = SystemState.SHUTDOWN
             return
 
-        if (hasattr(self, "_known_user")):
-            logger.info(f"Recognized user in IDLE: {self._known_user}")
-            self.user_name = recognized_users[0]
+        if known_users:
+            self.user_name = known_users[0]
             self.next_state = SystemState.OPENING_COMPARTMENT
             self._idle_logged = False
         elif button_pressed:
@@ -393,7 +410,7 @@ class RobotFSM:
         # Wait for button press to open compartment
         button_pressed = self.button.check_press()
 
-        if button_pressed & hasattr(self, '_training_started'):
+        if button_pressed and hasattr(self, '_training_started'):
             logger.info("Training complete - entering compartment opening state")
             self.next_state = SystemState.OPENING_COMPARTMENT
             self._training_started = False
@@ -488,12 +505,12 @@ class RobotFSM:
 
         # Check condition 2: Facial recognition (correct user)
         face_ok = False
-        recognized_users = face_rec.face_rec()
+        recognized_users = self._recognize_users()
         logger.info(f"Found users: {recognized_users}")
         print(self.user_name)
         print(recognized_users)
 
-        if recognized_users != None:
+        if recognized_users:
             if self.user_name in recognized_users:
                 face_ok = True
                 logger.info(f"Face Check: User {self.user_name} verified, OK=True")
