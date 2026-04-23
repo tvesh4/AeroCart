@@ -338,6 +338,14 @@ class RobotFSM:
             logger.info(f"[STATE] IDLE - Waiting for user button press")
             self._idle_logged = True
 
+        recognized_users = face_rec.face_rec()
+        try:
+            if recognized_users[0]!="Unknown":
+                logger.info(f"Recognized users in IDLE: {recognized_users}")
+                self._known_user = True
+
+
+        except: logger.info(f"Error with recognizing user")
         # Check for button press
         button_pressed = self.button.check_press()
 
@@ -345,7 +353,12 @@ class RobotFSM:
             self.next_state = SystemState.SHUTDOWN
             return
 
-        if button_pressed:
+        if (hasattr(self, "_known_user")):
+            logger.info(f"Recognized user in IDLE: {self._known_user}")
+            self.user_name = recognized_users[0]
+            self.next_state = SystemState.OPENING_COMPARTMENT
+            self._idle_logged = False
+        elif button_pressed:
             logger.info("User initiated - entering TRAINING state")
             self.next_state = SystemState.TRAINING
             self._idle_logged = False
