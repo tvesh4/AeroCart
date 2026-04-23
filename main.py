@@ -226,8 +226,9 @@ class ButtonHandler:
 
     def cleanup(self):
         """Release camera resources"""
-        if self.cap:
+        try:
             self.cap.release()
+        except:logger.info("eror")
         cv2.destroyAllWindows()
 
 
@@ -271,7 +272,7 @@ class RobotFSM:
         try:
             # Find available serial ports
             import glob
-            ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
+            #ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
 
 
         except Exception as e:
@@ -301,7 +302,7 @@ class RobotFSM:
         # self.current_user = None
         # self.user_name = None
         delattr(self, "_idle_logged")
-        delattr(self, "_training_started")
+        #delattr(self, "_training_started")
         delattr(self, "_opening_started")
         delattr(self, "_closing_started")
         delattr(self, "_following_started")
@@ -455,8 +456,12 @@ class RobotFSM:
         if not hasattr(self, '_following_started'):
             logger.info(f"[STATE] FOLLOWING - Following user with UWB")
             self.arduino.disconnect()
-            jetson_gate_guide.GateGuidanceSystem()
+            
+            t = threading.Thread(target=jetson_gate_guide.GateGuidanceSystem().run)
+            t.start()
+            t.join()#jetson_gate_guide.GateGuidanceSystem()
             self.arduino.connect()
+            self._following_started = True
 
         # Check for button press to enter storage state
         button_pressed = self.button.check_press()
@@ -532,7 +537,7 @@ class RobotFSM:
         """Get user name for training"""
         try:
             # Try to read from input
-            name = input("\n[INPUT] Enter user name for facial recognition training: ").strip()
+            name = "test"#name = input("\n[INPUT] Enter user name for facial recognition training: ").strip()
             if name:#big errors starting from here
                 return name
             else:
