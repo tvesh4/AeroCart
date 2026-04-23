@@ -12,12 +12,9 @@ import threading
 import queue
 import serial
 import logging
-import pickle
 from enum import Enum
 from dataclasses import dataclass
-from typing import Optional
 
-# Import project modules
 try:
     import headshots
     import model_training
@@ -40,10 +37,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# FSM State Definitions
-# ============================================================
-
 class SystemState(Enum):
     """Robot system states"""
     IDLE = "idle"
@@ -56,20 +49,9 @@ class SystemState(Enum):
 
 
 @dataclass
-class UserProfile:
-    """User profile data"""
-    name: str
-    face_encoding: Optional[np.ndarray] = None
-    uwb_distance: float = 0.0
-    last_seen: float = 0.0
-
-
-# ============================================================
-# Arduino Communication Handler
-# ============================================================
 
 class ArduinoHandler:
-    """Manages communication with Arduino Mega"""
+
 
     def __init__(self, port: str = "/dev/ttyUSB0", baud: int = 115200):#1a86:7523
         self.port = port
@@ -78,7 +60,7 @@ class ArduinoHandler:
         self.connected = False
 
     def connect(self) -> bool:
-        """Establish connection to Arduino"""
+        #Establish connection to Arduino
         try:
             self.ser = serial.Serial(self.port, self.baud, timeout=1.0)
             time.sleep(2)  # Wait for Arduino to initialize
@@ -91,10 +73,9 @@ class ArduinoHandler:
             return False
 
     def send_motor_command(self, left_speed: int, right_speed: int) -> bool:
-        """Send motor speed command to Arduino"""
+        #Send motor speed command to Arduino
         if not self.connected or not self.ser:
             return False
-
         try:
             # Format: M,left_speed,right_speed\n
             command = f"M,{left_speed},{right_speed}\n"
@@ -105,7 +86,7 @@ class ArduinoHandler:
             return False
 
     def open_compartment(self) -> bool:
-        """Send servo open command"""
+        #Send servo open command
         if not self.connected or not self.ser:
             return False
 
@@ -135,7 +116,7 @@ class ArduinoHandler:
             return False
 
     def disconnect(self):
-        """Close connection"""
+        #Close connection
         if self.ser:
             self.ser.close()
             self.connected = False
@@ -187,7 +168,7 @@ class ButtonHandler:
             self.has_gpio = False
 
     def _button_callback(self, channel):
-        """GPIO callback when button is pressed"""
+        #GPIO callback when button is pressed
         current_time = time.time()
         if current_time - self.last_press_time > self.debounce_time:
             self.pressed = True
@@ -195,7 +176,7 @@ class ButtonHandler:
             logger.info("Button pressed!")
 
     def check_press(self) -> bool:
-        """Check if button was pressed"""
+        #Check if button was pressed
         if self.has_gpio:
             pressed = self.pressed
             self.pressed = False
@@ -211,25 +192,12 @@ class ButtonHandler:
                 return False
 
     def cleanup(self):
-        """Cleanup GPIO"""
         if self.has_gpio:
             try:
                 self.gpio.cleanup()
             except:
                 pass
 
-
-# ============================================================
-# Facial Recognition Engine
-# ============================================================
-
-
-    def cleanup(self):
-        """Release camera resources"""
-        try:
-            self.cap.release()
-        except:logger.info("eror")
-        cv2.destroyAllWindows()
 
 
 # ============================================================
@@ -251,13 +219,11 @@ class RobotFSM:
         self.arduino = ArduinoHandler()
         self.arduino.connect()
         self.button = ButtonHandler()
-        # self.face_engine = FacialRecognitionEngine()
 
         # Initialize UWB handlers (ports may need adjustment)
         self.master_uwb = None
         self.slave_uwb = None
         self.uwb_initialized = False
-        self._initialize_uwb()
 
         # Robot state for following
         self.decision_engine = None
@@ -266,18 +232,6 @@ class RobotFSM:
         logger.info("=" * 60)
         logger.info("AeroCart Robot FSM Initialized")
         logger.info("=" * 60)
-
-    def _initialize_uwb(self):
-        """Initialize UWB modules"""
-        try:
-            # Find available serial ports
-            import glob
-            #ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/tty.usbmodem*')
-
-
-        except Exception as e:
-            logger.error(f"UWB initialization error: {e}")
-            self.uwb_initialized = False
 
     def run(self):
         """Main FSM loop"""
@@ -293,16 +247,7 @@ class RobotFSM:
 
     def reset_fsm_flags(self):
         """Resets all state-specific initialization flags for a new run"""
-        # self._idle_logged = False
-        # self._training_started = False
-        # self._opening_started = False
-        # self._closing_started = False
-        # self._following_started = False
-        # self._storage_started = False
-        # self.current_user = None
-        # self.user_name = None
         delattr(self, "_idle_logged")
-        #delattr(self, "_training_started")
         delattr(self, "_opening_started")
         delattr(self, "_closing_started")
         delattr(self, "_following_started")
@@ -310,23 +255,6 @@ class RobotFSM:
         self.current_user = None
         self.user_name = None
         logger.info("FSM flags reset for new user cycle.")
-
-    def _recognize_users(self) -> list:
-        """Run face recognition and normalize the returned user list."""
-        try:
-            recognized_users = face_rec.face_rec()
-        except SystemExit:
-            logger.error("Face recognition exited unexpectedly (camera/model issue).")
-            return []
-        except Exception as e:
-            logger.error(f"Face recognition failed: {e}")
-            return []
-
-        if not recognized_users:
-            return []
-        if isinstance(recognized_users, str):
-            return [recognized_users]
-        return [name for name in recognized_users if name]
 
     def process_state(self):
         """Process current state and handle transitions"""
@@ -361,7 +289,6 @@ class RobotFSM:
             if recognized_users[0]!="Unknown":
                 logger.info(f"Recognized users in IDLE: {recognized_users}")
                 self._known_user = True
-
 
         except: logger.info(f"Error with recognizing user")
         # Check for button press
@@ -476,7 +403,7 @@ class RobotFSM:
 
             t = threading.Thread(target=jetson_gate_guide.GateGuidanceSystem().run)
             t.start()
-            t.join()#jetson_gate_guide.GateGuidanceSystem()
+            t.join()
             self.arduino.connect()
             self._following_started = True
 
@@ -495,18 +422,6 @@ class RobotFSM:
             self._storage_started = True
             self.storage_start_time = time.time()
 
-        # Check condition 1: UWB distance (user is close)
-        # uwb_ok = False
-        # if self.current_user:
-        #     time_since_uwb = time.time() - self.current_user.last_seen
-        #     uwb_distance_ok = (
-        #         self.current_user.uwb_distance > 0 and
-        #         self.current_user.uwb_distance < 1.5 and  # Within 1.5 meters
-        #         time_since_uwb < 2.0  # Recent reading
-        #     )
-        #     uwb_ok = uwb_distance_ok
-        #     logger.info(f"UWB Check: Distance={self.current_user.uwb_distance:.2f}m, OK={uwb_ok}")
-        uwb_ok = True
 
         # Check condition 2: Facial recognition (correct user)
         face_ok = False
@@ -525,8 +440,8 @@ class RobotFSM:
             logger.info("Face Check: No face detected")
 
         # If both conditions met, unlock compartment
-        if uwb_ok and face_ok:
-            logger.info("✓ User verified! Opening compartment for unloading")
+        if face_ok:
+            logger.info("User verified! Opening compartment for unloading")
             if self.arduino.connected:
                 self.arduino.open_compartment()
                 time.sleep(3)
@@ -538,7 +453,6 @@ class RobotFSM:
             # Return to IDLE after user unloads
             time.sleep(3)  # Give user time to interact
             self.reset_fsm_flags()
-            #TODO maybe clear the images and pickles generated in this, or can keep the images if building multi person system idk
             logger.info("Returning to IDLE state")
             self.next_state = SystemState.IDLE
             self._storage_started = False
@@ -554,8 +468,8 @@ class RobotFSM:
         """Get user name for training"""
         try:
             # Try to read from input
-            name = "test"#name = input("\n[INPUT] Enter user name for facial recognition training: ").strip()
-            if name:#big errors starting from here
+            name = input("\n[INPUT] Enter user name for facial recognition training: ").strip()
+            if name:
                 return name
             else:
                 return "USER"
@@ -580,8 +494,6 @@ class RobotFSM:
         if self.slave_uwb:
             self.slave_uwb.stop()
 
-
-
         # Cleanup button GPIO
         if self.button:
             self.button.cleanup()
@@ -592,9 +504,6 @@ class RobotFSM:
         logger.info("=" * 60)
 
 
-# ============================================================
-# Main Entry Point
-# ============================================================
 
 def main():
     """Main entry point"""

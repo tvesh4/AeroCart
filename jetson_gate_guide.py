@@ -1,43 +1,12 @@
-"""
-=============================================================
-  AIRPORT GATE GUIDANCE SYSTEM - Jetson Nano Brain
-=============================================================
-  Hardware:
-    - Camera (face_rec module for face recognition)
-    - UWB Tag via Serial UART (distance from master at start)
-    - Arduino Mega via Serial USB (motor/sensor control)
-
-  Arduino Modes (reported as "MODE:#\n" over serial):
-    Mode 0 — Line Tracking (DEFAULT)
-        Jetson is in command: sends TRACK / STOP / LEFT / RIGHT.
-        UWB distance is monitored to decide when to stop & turn.
-
-    Mode 1 — Human Following
-        Arduino is fully autonomous; it drives itself.
-        Jetson suspends all movement commands and just monitors
-        the serial stream, waiting for MODE:0 to resume.
-
-  Flow (per passenger):
-    1.  Detect & identify passenger face via face_rec module
-    2.  Look up assigned gate + target distance via GateDB
-    3.  Check current mode:
-          Mode 0 -> send TRACK, monitor UWB, send STOP + turn
-          Mode 1 -> stand by until Arduino reports MODE:0, then resume
-    4.  Deliver passenger to gate
-=============================================================
-"""
-
 import serial
 import time
 import threading
-import face_rec                        # Your face recognition module
+import face_rec
 
-# ====================== CONFIG ======================
-
-ARDUINO_PORT   = "/dev/ttyUSB0"       # Arduino Mega USB serial
+ARDUINO_PORT   = "/dev/ttyUSB0"
 ARDUINO_BAUD   = 115200
 
-UWB_PORT       = "/dev/ttyACM0"       # UWB tag serial
+UWB_PORT       = "/dev/ttyACM0"
 UWB_BAUD       = 115200
 
 # Gate database: gate_number -> target distance in metres from start
@@ -52,9 +21,9 @@ GATE_DATABASE = {
 
 # Passenger database: name -> gate number
 PASSENGER_DATABASE = {
-    "person_a": 2,
-    "person_b": 3,
-    "person_c": 5,
+    "person_a": 1,
+    "person_b": 2,
+    "person_c": 3,
     "person_d": 4,
     "person_e": 5,
     "person_f": 6,
@@ -78,16 +47,8 @@ MODE_HUMAN_FOLLOWING = 1   # Arduino is autonomous
 # ====================== GATE DATABASE HELPER ======================
 
 class GateDB:
-    """
-    Wraps PASSENGER_DATABASE and GATE_DATABASE.
-    Provides get_first_recognized_gate() used by the face-rec flow.
-    """
     def get_first_recognized_gate(self, recognized_users: list):
-        """
-        Given a list of recognised passenger names (from face_rec),
-        returns (gate_number, target_distance, passenger_name) for the
-        first name found in PASSENGER_DATABASE, or None if none match.
-        """
+        #Given a list of recognised passenger names (from face_rec), returns (gate_number, target_distance, passenger_name), or None
         for name in recognized_users:
             if name in PASSENGER_DATABASE:
                 gate     = PASSENGER_DATABASE[name]
@@ -101,14 +62,11 @@ class GateDB:
 class ArduinoComm:
     """
     Manages serial communication with the Arduino Mega.
-
-    A background thread continuously reads incoming lines:
-      - Lines starting with "MODE:" update self.current_mode automatically.
-      - All other lines are printed as Arduino debug output.
-
+    Lines starting with "MODE:" update self.current_mode automatically.
+    All other lines are printed as Arduino debug output.
     Mode values:
-        MODE_LINE_TRACKING   (0) -- Jetson sends TRACK/STOP/LEFT/RIGHT.
-        MODE_HUMAN_FOLLOWING (1) -- Arduino autonomous; Jetson waits.
+    MODE_LINE_TRACKING   (0) -- Jetson sends TRACK/STOP/LEFT/RIGHT.
+    MODE_HUMAN_FOLLOWING (1) -- Arduino autonomous; Jetson waits.
     """
 
     def __init__(self, port, baud):
@@ -126,9 +84,7 @@ class ArduinoComm:
         self._reader_thread.start()
         print(f"[Arduino] Connected on {port} -- default Mode 0 (Line Tracking)")
 
-    # ------------------------------------------------------------------
     def _read_loop(self):
-        """Background thread: continuously read every incoming Arduino line."""
         while self._running:
             try:
                 raw = self.ser.readline()
@@ -141,7 +97,7 @@ class ArduinoComm:
                 with self._lock:
                     self.last_line = line
 
-                # ---- Mode-switch detection --------------------------------
+                #Mode-switch detection
                 if line.startswith("MODE:"):
                     try:
                         new_mode = int(line.split(":")[1])
@@ -165,18 +121,17 @@ class ArduinoComm:
                     print(f"[Arduino] << {line}")
 
             except Exception:
-                pass   # Serial errors are transient; keep looping
+                pass
 
-    # ------------------------------------------------------------------
     def send(self, cmd: str):
-        """Send a newline-terminated command string to the Arduino."""
+        #Send a newline-terminated command string to the Arduino.
         msg = cmd.strip() + "\n"
         with self._lock:
             self.ser.write(msg.encode())
         print(f"[Arduino] >> {cmd}")
 
     def get_mode(self) -> int:
-        """Thread-safe read of the current Arduino mode."""
+        #Thread-safe read of the current Arduino mode.
         with self._lock:
             return self.current_mode
 
@@ -196,14 +151,8 @@ class ArduinoComm:
         self.ser.close()
 
 
-# ====================== UWB COMM ======================
-
 class UWBComm:
-    """
-    Reads distance from UWB tag serial stream.
-    Expected format from UWB module: "DIST:1.234\n"
-    Adjust _parse_line() to match your UWB module's output format.
-    """
+    #Reads distance from UWB tag serial stream.
     def __init__(self, port, baud):
         self.ser      = serial.Serial(port, baud, timeout=1)
         self.distance = 0.0
@@ -217,27 +166,15 @@ class UWBComm:
         while self._running:
             try:
                 line = self.ser.readline().decode().strip()
-                #print(line)
                 dist = self._parse_line(line)
                 if dist is not None:
                     self.distance = dist
-                #print(dist)
             except Exception:
                 pass
 
     def _parse_line(self, line):
-        """
-        Parse UWB serial output. Adjust this to your module's format.
-        Common formats:
-          "DIST:1.234"
-          "1.234"
-          "Dist=1.234m"
-        """
         try:
             return float(line.split("=")[1])
-                #return float(line.split("DIST:")[1])
-            #elif line.replace(".", "").isdigit():
-                #return float(line)
         except Exception:
             pass
         return None
@@ -285,7 +222,6 @@ class GateGuidanceSystem:
 
             while True:
                 self._guide_one_passenger()
-                #print("\n[System] Ready for next passenger...\n")
                 time.sleep(2)
                 return
 
@@ -297,12 +233,9 @@ class GateGuidanceSystem:
             self.uwb.stop()
             self.arduino.close()
 
-    # ==================================================================
     def _guide_one_passenger(self):
 
-        # ------------------------------------------------------------------
         # STEP 1 -- Face recognition
-        # ------------------------------------------------------------------
         print("[STEP 1] Running face recognition...")
         recognized_users = face_rec.face_rec()
 
@@ -335,14 +268,7 @@ class GateGuidanceSystem:
         print(f"         Target    : {target_distance}m")
         print(f"         Turn      : {turn_direction}")
 
-        # ------------------------------------------------------------------
         # STEP 2 -- Navigate to gate
-        #
-        # The UWB tag travels with the robot in BOTH modes, so distance
-        # accumulates correctly regardless of who is driving.
-        # When mode switches to 1, Jetson stops sending commands and waits.
-        # When mode returns to 0, Jetson re-issues TRACK and resumes.
-        # ------------------------------------------------------------------
         print(f"\n[STEP 2] Starting navigation to Gate {gate_number}...")
         self.uwb.calibrate()   # Reset origin to current position
 
@@ -353,9 +279,7 @@ class GateGuidanceSystem:
 
         self.arduino.send("forward")
 
-        # ---- Navigation loop --------------------------------------------
         while True:
-
             # -- Mode 1: Human Following -- Jetson yields control ----------
             if self.arduino.get_mode() == MODE_HUMAN_FOLLOWING:
                 self._handle_human_following_mode()
@@ -379,9 +303,7 @@ class GateGuidanceSystem:
 
             time.sleep(0.05)   # 50 ms polling loop
 
-        # ------------------------------------------------------------------
         # STEP 3 -- Stop and turn
-        # ------------------------------------------------------------------
         print(f"\n[STEP 3] Stopping and turning {turn_direction}...")
         self.arduino.send("STOP")
         time.sleep(0.5)
@@ -391,24 +313,14 @@ class GateGuidanceSystem:
         time.sleep(0.2)
         
 
-        # ------------------------------------------------------------------
         # STEP 4 -- Done
-        # ------------------------------------------------------------------
         print(f"[STEP 4] Passenger '{self.recognized_user}' "
               f"delivered to Gate {gate_number}.")
 
-    # ==================================================================
     # MODE HELPERS
-    # ==================================================================
 
     def _handle_human_following_mode(self):
-        """
-        Called mid-navigation when the Arduino switches to Human Following.
-
-        Jetson suspends all movement commands and waits for MODE:0.
-        UWB continues accumulating distance in the background (the tag is
-        on the robot, so progress made in human-following mode is counted).
-        """
+        #Called mid-navigation when the Arduino switches to Human Following.
         print("\n[MODE 1] Human Following -- Arduino is autonomous.")
         print("[MODE 1] Jetson suspended. Waiting for MODE:0 ...")
 
@@ -417,14 +329,12 @@ class GateGuidanceSystem:
         print("[MODE 0] Line Tracking resumed -- Jetson back in command.")
 
     def _wait_for_line_tracking_mode(self):
-        """Block until Arduino is in Mode 0, with a one-time warning."""
+        #Block until Arduino is in Mode 0, with a one-time warning.
         print(f"[WARN] Arduino is in Mode {self.arduino.get_mode()}. "
               f"Waiting for Line Tracking (Mode 0)...")
         self.arduino.wait_for_mode(MODE_LINE_TRACKING)
         print("[INFO] Mode 0 confirmed -- proceeding.")
 
-
-# ====================== ENTRY POINT ======================
 
 if __name__ == "__main__":
     system = GateGuidanceSystem()

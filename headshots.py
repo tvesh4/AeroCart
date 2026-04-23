@@ -48,10 +48,6 @@ def create_folder(name):
 
 
 def detect_face(frame):
-    """
-    Detect if there's a face in the frame.
-    Returns True if a face is detected, False otherwise.
-    """
     try:
         # Resize frame for faster processing
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
@@ -67,10 +63,6 @@ def detect_face(frame):
 
 
 def draw_face_box(frame):
-    """
-    Draw a box around detected faces for visual feedback.
-    Returns the modified frame.
-    """
     try:
         # Resize frame for processing
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
@@ -181,7 +173,6 @@ def capture_photos(name):
 
     if(photo_count > 3): return True
     else: return False
-
 
 if __name__ == "__main__":
     empty = capture_photos(PERSON_NAME)
