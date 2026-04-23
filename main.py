@@ -311,6 +311,23 @@ class RobotFSM:
         self.user_name = None
         logger.info("FSM flags reset for new user cycle.")
 
+    def _recognize_users(self) -> list:
+        """Run face recognition and normalize the returned user list."""
+        try:
+            recognized_users = face_rec.face_rec()
+        except SystemExit:
+            logger.error("Face recognition exited unexpectedly (camera/model issue).")
+            return []
+        except Exception as e:
+            logger.error(f"Face recognition failed: {e}")
+            return []
+
+        if not recognized_users:
+            return []
+        if isinstance(recognized_users, str):
+            return [recognized_users]
+        return [name for name in recognized_users if name]
+
     def process_state(self):
         """Process current state and handle transitions"""
 
@@ -456,7 +473,7 @@ class RobotFSM:
         if not hasattr(self, '_following_started'):
             logger.info(f"[STATE] FOLLOWING - Following user with UWB")
             self.arduino.disconnect()
-            
+
             t = threading.Thread(target=jetson_gate_guide.GateGuidanceSystem().run)
             t.start()
             t.join()#jetson_gate_guide.GateGuidanceSystem()
