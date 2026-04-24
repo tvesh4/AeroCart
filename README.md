@@ -24,3 +24,15 @@ OLED	SDA/SCL (I2C), Reset: 28
 MPU6050	SDA/SCL (I2C)
 LEDs	Blue:11, Green:13, Red:14
 Buzzer	15
+
+
+** Final Code files to use: **
+full_arduino_robot.ino
+face_rec.py
+headshots-backup.py
+headshots.py
+jetson_gate_guide.py 
+jetsonnanoUWB.py
+main.py
+model_training.py
+PC_UWB_Anchor.py
